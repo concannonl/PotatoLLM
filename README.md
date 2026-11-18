@@ -15,6 +15,7 @@ After that, use the **Offline Assistant** icon on the desktop. No admin rights a
 - Checks the computer and picks the right model automatically: a 3B model with 8 GB of memory or more, otherwise a 1B model.
 - Chooses the best engine settings for the CPU. The user never sees them.
 - Provides a simple native chat window with saved chats, a Stop button and New chat.
+- Shows a **chat memory** bar: how much of the model's context window the chat fills. Its tooltip explains it in plain language.
 - Keeps chats only on the computer, in `%LOCALAPPDATA%\OfflineAssistant\chats`.
 
 ## How it works

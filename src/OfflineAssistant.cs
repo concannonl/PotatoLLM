@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Net;
@@ -192,6 +193,55 @@ namespace OfflineAssistant
         }
     }
 
+    // A slim rounded progress bar showing how full the conversation memory is.
+    class MemoryBar : Control
+    {
+        double fraction;
+
+        public MemoryBar()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        }
+
+        public double Fraction
+        {
+            get { return fraction; }
+            set { fraction = Math.Max(0, Math.Min(1, value)); Invalidate(); }
+        }
+
+        static GraphicsPath Rounded(RectangleF r)
+        {
+            float d = r.Height;
+            var path = new GraphicsPath();
+            if (r.Width < d) { path.AddEllipse(r); return path; }
+            path.AddArc(r.X, r.Y, d, d, 90, 180);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 180);
+            path.CloseFigure();
+            return path;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.Clear(Parent != null ? Parent.BackColor : BackColor);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            float h = 8f;
+            var track = new RectangleF(1, (Height - h) / 2f, Width - 2, h);
+            using (var path = Rounded(track))
+            using (var b = new SolidBrush(Color.FromArgb(222, 225, 230)))
+                e.Graphics.FillPath(b, path);
+
+            if (fraction <= 0) return;
+            Color fill = fraction < 0.7 ? Color.FromArgb(16, 150, 100)
+                       : fraction < 0.9 ? Color.FromArgb(217, 140, 20)
+                       : Color.FromArgb(205, 60, 50);
+            var bar = new RectangleF(track.X, track.Y, Math.Max(h, (float)(track.Width * fraction)), h);
+            using (var path = Rounded(bar))
+            using (var b = new SolidBrush(fill))
+                e.Graphics.FillPath(b, path);
+        }
+    }
+
     // One saved chat in the sidebar list.
     class ChatInfo
     {
@@ -214,6 +264,11 @@ namespace OfflineAssistant
         Button sendButton;
         Button newChatButton;
         Label status;
+        MemoryBar memoryBar;
+        Label memoryLabel;
+        ToolTip tips;
+        int usedTokens;            // how much of the context window the chat currently fills
+        int liveBase;              // estimate at the start of the current reply
         ListBox chatList;
         ContextMenuStrip chatMenu;
 
@@ -309,7 +364,30 @@ namespace OfflineAssistant
             status.Dock = DockStyle.Fill;
             status.TextAlign = ContentAlignment.MiddleLeft;
             status.ForeColor = noteColor;
+            tips = new ToolTip();
+            tips.AutoPopDelay = 30000;
+            tips.InitialDelay = 300;
+            tips.ReshowDelay = 100;
+
+            var memoryPanel = new Panel();
+            memoryPanel.Dock = DockStyle.Right;
+            memoryPanel.Width = 290;
+
+            memoryLabel = new Label();
+            memoryLabel.Dock = DockStyle.Fill;
+            memoryLabel.TextAlign = ContentAlignment.MiddleRight;
+            memoryLabel.ForeColor = noteColor;
+            memoryLabel.Padding = new Padding(0, 0, 8, 0);
+
+            memoryBar = new MemoryBar();
+            memoryBar.Dock = DockStyle.Right;
+            memoryBar.Width = 130;
+
+            memoryPanel.Controls.Add(memoryLabel);
+            memoryPanel.Controls.Add(memoryBar);
+
             top.Controls.Add(status);
+            top.Controls.Add(memoryPanel);
 
             // Sidebar: New chat + saved chats
             var sidebar = new Panel();
@@ -405,6 +483,7 @@ namespace OfflineAssistant
 
             SetStatus("Getting ready...");
             sendButton.Enabled = false;
+            UpdateMemory(EstimateTokens(BuildMessages()));
         }
 
         void InputKeyDown(object sender, KeyEventArgs e)
@@ -586,6 +665,7 @@ namespace OfflineAssistant
             historyStart = 0;
             transcript.Clear();
             SelectInList(null);
+            UpdateMemory(EstimateTokens(BuildMessages()));
             if (ready)
             {
                 AppendNote("New chat started.");
@@ -791,6 +871,7 @@ namespace OfflineAssistant
             if (history.Count > 0 && (string)history[history.Count - 1]["role"] == "user")
                 history.RemoveAt(history.Count - 1);
 
+            UpdateMemory(EstimateTokens(BuildMessages()));
             SelectInList(currentChatId);
             if (ready) SetStatus("Ready");
             input.Focus();
@@ -883,6 +964,8 @@ namespace OfflineAssistant
 
             int myId = ++genId;
             var messages = BuildMessages();
+            liveBase = EstimateTokens(messages);
+            UpdateMemory(liveBase);
             var t = new Thread(() => Generate(messages, myId));
             t.IsBackground = true;
             t.Start();
@@ -916,6 +999,8 @@ namespace OfflineAssistant
         void Generate(List<object> messages, int myId)
         {
             var reply = new StringBuilder();
+            int pieces = 0;          // the engine streams about one token per chunk
+            int realTotal = -1;      // exact count reported by the engine, if any
             string error = null;
             var json = new JavaScriptSerializer();
             json.MaxJsonLength = int.MaxValue;
@@ -927,6 +1012,9 @@ namespace OfflineAssistant
                 body["temperature"] = 0.7;
                 body["max_tokens"] = maxReply;
                 body["cache_prompt"] = true;
+                var streamOptions = new Dictionary<string, object>();
+                streamOptions["include_usage"] = true;
+                body["stream_options"] = streamOptions;
                 byte[] data = Encoding.UTF8.GetBytes(json.Serialize(body));
 
                 var req = (HttpWebRequest)WebRequest.Create(baseUrl + "/v1/chat/completions");
@@ -948,11 +1036,15 @@ namespace OfflineAssistant
                         if (!line.StartsWith("data:")) continue;
                         string payload = line.Substring(5).Trim();
                         if (payload == "[DONE]") break;
-                        string piece = ExtractDelta(json.DeserializeObject(payload));
+                        object parsed = json.DeserializeObject(payload);
+                        int reported = ReadTokenTotal(parsed);
+                        if (reported > 0) realTotal = reported;
+                        string piece = ExtractDelta(parsed);
                         if (string.IsNullOrEmpty(piece)) continue;
                         reply.Append(piece);
+                        int count = ++pieces;
                         string snapshot = reply.ToString();
-                        Ui(() => ShowPartial(myId, snapshot));
+                        Ui(() => ShowPartial(myId, snapshot, count));
                     }
                 }
             }
@@ -961,7 +1053,72 @@ namespace OfflineAssistant
                 if (!stopRequested) error = ex.Message;
             }
             string final = reply.ToString();
-            Ui(() => FinishReply(myId, final, error));
+            int total = realTotal > 0 ? realTotal : -1;
+            int counted = pieces;
+            Ui(() => FinishReply(myId, final, error, total, counted));
+        }
+
+        // Rough estimate used until the engine reports exact numbers: about 3 characters per token.
+        static int EstimateTokens(List<object> messages)
+        {
+            int chars = 0;
+            foreach (var m in messages)
+            {
+                var d = m as Dictionary<string, object>;
+                if (d != null && d.ContainsKey("content")) chars += ((d["content"] as string) ?? "").Length;
+            }
+            return chars / 3 + messages.Count * 5;
+        }
+
+        static int ToInt(object o)
+        {
+            try { return o == null ? 0 : Convert.ToInt32(o, CultureInfo.InvariantCulture); }
+            catch { return 0; }
+        }
+
+        // The engine's last message says exactly how many tokens the chat used.
+        static int ReadTokenTotal(object parsed)
+        {
+            var obj = parsed as Dictionary<string, object>;
+            if (obj == null) return -1;
+            var timings = obj.ContainsKey("timings") ? obj["timings"] as Dictionary<string, object> : null;
+            if (timings != null && timings.ContainsKey("predicted_n"))
+            {
+                int t = (timings.ContainsKey("cache_n") ? ToInt(timings["cache_n"]) : 0)
+                      + (timings.ContainsKey("prompt_n") ? ToInt(timings["prompt_n"]) : 0)
+                      + ToInt(timings["predicted_n"]);
+                if (t > 0) return t;
+            }
+            var usage = obj.ContainsKey("usage") ? obj["usage"] as Dictionary<string, object> : null;
+            if (usage != null)
+            {
+                int t = usage.ContainsKey("total_tokens") ? ToInt(usage["total_tokens"])
+                      : ToInt(usage.ContainsKey("prompt_tokens") ? usage["prompt_tokens"] : null)
+                        + ToInt(usage.ContainsKey("completion_tokens") ? usage["completion_tokens"] : null);
+                if (t > 0) return t;
+            }
+            return -1;
+        }
+
+        void UpdateMemory(int tokens)
+        {
+            usedTokens = Math.Max(0, Math.Min(tokens, ctx));
+            double fraction = ctx > 0 ? (double)usedTokens / ctx : 0;
+            int percent = (int)Math.Round(fraction * 100);
+            memoryBar.Fraction = fraction;
+            memoryLabel.Text = "Chat memory: " + percent + "% used";
+
+            int wordsTotal = ctx * 3 / 4;
+            string tip =
+                "Chat memory\n\n" +
+                "The assistant can only keep about " + wordsTotal.ToString("N0") + " words of this chat in mind at once.\n" +
+                "This bar shows how much of that space the chat is using.\n\n" +
+                "When it fills up, the assistant starts forgetting the earliest messages.\n" +
+                "For a completely fresh start, click New chat.\n\n" +
+                "Using " + usedTokens.ToString("N0") + " of " + ctx.ToString("N0") + " tokens (" +
+                (ctx - usedTokens).ToString("N0") + " left). A token is a word or part of a word.";
+            tips.SetToolTip(memoryBar, tip);
+            tips.SetToolTip(memoryLabel, tip);
         }
 
         static string ExtractDelta(object parsed)
@@ -977,17 +1134,19 @@ namespace OfflineAssistant
             return delta["content"] as string;
         }
 
-        void ShowPartial(int myId, string text)
+        void ShowPartial(int myId, string text, int tokensSoFar)
         {
             if (!busy || myId != genId) return;
+            UpdateMemory(liveBase + tokensSoFar);
             partialReply = text;
             if (!writing) { writing = true; SetStatus("Writing..."); }
             ReplaceAssistantText(Clean(text));
         }
 
-        void FinishReply(int myId, string final, string error)
+        void FinishReply(int myId, string final, string error, int realTotal, int tokensCounted)
         {
             if (myId != genId) return; // belongs to a chat the user has left
+            UpdateMemory(realTotal > 0 ? realTotal : liveBase + tokensCounted);
             bool wasStopped = stopRequested;
             dirty = true;
             busy = false;
