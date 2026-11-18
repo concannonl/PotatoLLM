@@ -5,3 +5,5 @@ benchmark/log-*
 *.gguf
 *.zip
 build-errors.txt
+benchmark/context-results-*
+benchmark/context-logs/
