@@ -1,0 +1,7 @@
+benchmark/llama/
+benchmark/models/
+benchmark/results-*
+benchmark/log-*
+*.gguf
+*.zip
+build-errors.txt
