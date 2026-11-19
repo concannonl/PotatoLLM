@@ -62,6 +62,23 @@ These are the results of `benchmark/quality-test.ps1`: 10 everyday questions wit
 - **LFM2.5-2.6B thinks before answering.** Its timings imply roughly 150–500 hidden reasoning tokens per answer. On the recipe question it hit the 512-token cap while still thinking and returned nothing. Its high raw speed doesn't carry through to the user.
 - **Gemma-3-4B gave correct, concise and well-pitched answers** at almost the same time per answer as Llama, and it holds up far better in long chats.
 
+## Answer quality: 4 GB candidates (run on the X250)
+
+| | Llama-3.2-1B | LFM2.5-1.2B | Gemma-3-1B |
+|---|---|---|---|
+| Reply speed | 13.4 tok/s | 15.2 tok/s | 12.4 tok/s |
+| Peak engine memory | ~1.5 GB | ~1.3 GB | **~1.0 GB** |
+| Hidden thinking | none | none | none |
+| Electricity bill (£67.35) | ✗ 6760p | ✗ £6,735 | ✗ 5304p |
+| Bat and ball (5p) | ✓ | ✓ ("5 cents") | ✓ |
+| Canberra / ~27m | ✓ | ✓, but says Australia is "one of the most populous countries" | ✓ |
+| 2030 World Cup | ✓ honest | ✓ honest | ✗ claims it was held in 2022 in Qatar |
+| Summary | ✗ says food waste also goes fortnightly | leaves out weekly food waste | leaves out weekly food waste |
+| Other | Rambling, wrong sky explanation; recipe isn't from the cupboard | Friendly text drops "another time" | Best explanations; uses markdown |
+
+- **No 1B model can be trusted with arithmetic.** All three got the bill wrong, and two of the wrong answers look believable.
+- Each model has one serious failure. Gemma-3-1B has the lowest memory use, which matters a great deal on 4 GB with Windows, and gives the clearest explanations. Its sliding-window attention should also keep long chats fast.
+
 ## Lenovo X240, 4 GB
 
 Not tested yet.
