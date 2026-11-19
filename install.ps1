@@ -30,14 +30,14 @@ $logical  = [int]$cpu.NumberOfLogicalProcessors
 $ramGB    = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
 Write-Host "  $($cpu.Name.Trim()), $cores cores, $ramGB GB memory"
 
-# Choose the model from memory size. Speed on these laptops is roughly
-# 11 GB/s divided by the model file size, so bigger = smarter but slower.
+# Choose the model from memory size. See docs/benchmarks.md for why:
+# Gemma 3 4B gave the best answers and barely slows down as long chats fill its memory.
 if ($ramGB -ge 7) {
-    $model = @{ label='standard (3B)'; gb=2.0; file='Llama-3.2-3B-Instruct-Q4_K_M.gguf'
-                url='https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf' }
+    $model = @{ label='standard (Gemma 3 4B)'; gb=2.5; context=16384
+                repo='bartowski/google_gemma-3-4b-it-GGUF'; file='google_gemma-3-4b-it-Q4_K_M.gguf'; pattern='gemma-3-4b.*Q4_K_M' }
 } else {
-    $model = @{ label='compact (1B)'; gb=0.8; file='Llama-3.2-1B-Instruct-Q4_K_M.gguf'
-                url='https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf' }
+    $model = @{ label='compact (Llama 3.2 1B)'; gb=0.8; context=4096
+                repo='bartowski/Llama-3.2-1B-Instruct-GGUF'; file='Llama-3.2-1B-Instruct-Q4_K_M.gguf'; pattern='Llama-3\.2-1B.*Q4_K_M' }
 }
 Write-Host "  Chosen assistant size: $($model.label)"
 
@@ -81,24 +81,40 @@ if (-not $server) {
 Step 3 "Getting the assistant ($($model.label), about $($model.gb) GB)"
 $modelPath = Join-Path $Models $model.file
 if (-not (Test-Path $modelPath) -or (Get-Item $modelPath).Length -lt 100MB) {
-    # Reuse a copy from the benchmark kit if there is one, to save a download.
-    $candidates = @(
-        (Join-Path $Here "models\$($model.file)"),
-        (Join-Path $Here "benchmark\models\$($model.file)"),
-        (Join-Path (Split-Path $Here -Parent) "x250-llm-benchmark\models\$($model.file)"),
-        (Join-Path ([Environment]::GetFolderPath('Desktop')) "x250-llm-benchmark\models\$($model.file)")
+    # Reuse a copy from the benchmark kits if there is one, to save a download.
+    $searchDirs = @(
+        (Join-Path $Here 'models'),
+        (Join-Path $Here 'benchmark\models'),
+        (Join-Path (Split-Path $Here -Parent) 'x250-llm-benchmark\models'),
+        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'x250-llm-benchmark\models')
     )
-    $existing = $candidates | Where-Object { (Test-Path $_) -and (Get-Item $_).Length -gt 100MB } | Select-Object -First 1
+    $existing = $searchDirs | ForEach-Object { Get-ChildItem -Path $_ -Filter '*.gguf' -ErrorAction SilentlyContinue } |
+        Where-Object { $_.Name -match $model.pattern -and $_.Name -notmatch 'mmproj' -and $_.Length -gt 100MB } |
+        Select-Object -First 1
     if ($existing) {
-        Write-Host "  Copying from $existing"
-        Copy-Item $existing $modelPath -Force
+        Write-Host "  Copying from $($existing.FullName)"
+        Copy-Item $existing.FullName $modelPath -Force
     } else {
         Write-Host "  Downloading. This can take a while on a slow connection."
-        curl.exe -L --fail -C - -o $modelPath $model.url
-        if ($LASTEXITCODE -ne 0) { Fail "The download stopped. Run the installer again and it will carry on where it left off." }
+        curl.exe -L --fail -C - -o $modelPath "https://huggingface.co/$($model.repo)/resolve/main/$($model.file)"
+        if ($LASTEXITCODE -ne 0) {
+            # The file may have been renamed upstream: look up the current name.
+            try {
+                $info = Invoke-RestMethod -Uri "https://huggingface.co/api/models/$($model.repo)" -Headers @{ 'User-Agent' = 'offline-assistant-installer' }
+                $file = $info.siblings.rfilename | Where-Object { $_ -match 'Q4_K_M\.gguf$' -and $_ -notmatch 'mmproj' } | Select-Object -First 1
+            } catch { $file = $null }
+            if (-not $file) { Fail "The download stopped. Run the installer again and it will carry on where it left off." }
+            curl.exe -L --fail -C - -o $modelPath "https://huggingface.co/$($model.repo)/resolve/main/$file"
+            if ($LASTEXITCODE -ne 0) { Fail "The download stopped. Run the installer again and it will carry on where it left off." }
+        }
     }
 } else {
     Write-Host "  Already downloaded"
+}
+# Remove models from earlier versions to free disk space.
+Get-ChildItem -Path $Models -Filter '*.gguf' | Where-Object { $_.FullName -ne $modelPath } | ForEach-Object {
+    Write-Host "  Removing old model $($_.Name)"
+    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
 }
 
 # ---------- 4. Build the chat app ----------
@@ -130,7 +146,7 @@ $threadsBatch = [math]::Max($threads, $logical)
     "# Chosen automatically by the installer.",
     "engine=$($server.FullName)",
     "model=$modelPath",
-    "context=4096",
+    "context=$($model.context)",
     "threads=$threads",
     "threads_batch=$threadsBatch",
     "max_reply=768"

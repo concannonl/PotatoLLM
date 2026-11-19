@@ -293,6 +293,13 @@ namespace OfflineAssistant
 
         readonly List<Dictionary<string, object>> history = new List<Dictionary<string, object>>();
         int historyStart = 0; // older messages before this index are no longer sent
+        bool coldStart = true;     // engine has none of this chat cached (new engine or reopened chat)
+        bool lastBuildTrimmed;     // the last BuildMessages dropped older messages
+
+        // Reading text is slow on these laptops (~20 tokens/s), so cap how much has to be
+        // re-read at once: when a chat is reopened, or when old messages are dropped.
+        const int MaxMessageChars = 8000;   // about 1,300 words in one message
+        const int ReloadChars = 9000;       // about 3,000 tokens: one to two minutes to re-read
 
         readonly Font bodyFont = new Font("Segoe UI", 11f);
         readonly Font headFont = new Font("Segoe UI", 10f, FontStyle.Bold);
@@ -559,6 +566,7 @@ namespace OfflineAssistant
 
         void StartEngine()
         {
+            coldStart = true;
             ready = false;
             sendButton.Enabled = false;
             if (!File.Exists(enginePath) || !File.Exists(modelPath))
@@ -856,6 +864,7 @@ namespace OfflineAssistant
             history.Clear();
             history.AddRange(loaded);
             historyStart = 0;
+            coldStart = true;
             dirty = false;
 
             transcript.Clear();
@@ -936,7 +945,7 @@ namespace OfflineAssistant
 
             string text = input.Text.Trim();
             if (text.Length == 0) return;
-            if (text.Length > PromptBudgetChars() * 8 / 10)
+            if (text.Length > Math.Min(PromptBudgetChars() * 8 / 10, MaxMessageChars))
             {
                 MessageBox.Show(
                     "That's too long for this computer to read in one go.\n\nPlease paste a shorter piece (about 1,000 words or less).",
@@ -959,11 +968,14 @@ namespace OfflineAssistant
             stopRequested = false;
             partialReply = "";
             sendButton.Text = "Stop";
-            SetStatus("Reading your message...");
             SaveCurrentChat(); // the chat appears in the list as soon as it starts
 
             int myId = ++genId;
+            bool wasCold = coldStart;
             var messages = BuildMessages();
+            coldStart = false;
+            bool catchingUp = (wasCold && messages.Count > 2) || lastBuildTrimmed;
+            SetStatus(catchingUp ? "Catching up on the conversation... (this can take a minute or two)" : "Reading your message...");
             liveBase = EstimateTokens(messages);
             UpdateMemory(liveBase);
             var t = new Thread(() => Generate(messages, myId));
@@ -979,9 +991,11 @@ namespace OfflineAssistant
             int total = 0;
             for (int i = historyStart; i < history.Count; i++) total += ((string)history[i]["content"]).Length + 12;
 
-            if (total > budget)
+            lastBuildTrimmed = false;
+            if (total > budget || (coldStart && total > ReloadChars))
             {
-                int target = budget * 6 / 10;
+                lastBuildTrimmed = total > budget;
+                int target = Math.Min(budget * 6 / 10, ReloadChars);
                 while (historyStart < history.Count - 1 && total > target)
                 {
                     total -= ((string)history[historyStart]["content"]).Length + 12;

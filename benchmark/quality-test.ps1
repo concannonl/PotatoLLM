@@ -3,7 +3,8 @@
 # then writes a blind side-by-side report (models shown as A / B / C).
 # Run with -ReportOnly to rebuild the report from the latest saved results without re-testing.
 
-param([switch]$ReportOnly)
+# Run with -Small to test the models for 4 GB laptops instead.
+param([switch]$ReportOnly, [switch]$Small)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -76,11 +77,19 @@ if (-not $server) {
 }
 
 # ---------- Models ----------
-$models = @(
-    @{ name='Llama-3.2-3B (current)'; pattern='Llama-3\.2-3B.*Q4_K_M'; repo='bartowski/Llama-3.2-3B-Instruct-GGUF' },
-    @{ name='LFM2.5-2.6B';            pattern='LFM2\.5-2\.6B.*Q4_K_M';  repo='LiquidAI/LFM2.5-2.6B-GGUF' },
-    @{ name='Gemma-3-4B';             pattern='gemma-3-4b.*Q4_K_M';     repo='bartowski/google_gemma-3-4b-it-GGUF' }
-)
+if ($Small) {
+    $models = @(
+        @{ name='Llama-3.2-1B (current)'; pattern='Llama-3\.2-1B.*Q4_K_M'; repo='bartowski/Llama-3.2-1B-Instruct-GGUF' },
+        @{ name='LFM2.5-1.2B';            pattern='LFM2\.5-1\.2B.*Q4_K_M';  repo='LiquidAI/LFM2.5-1.2B-Instruct-GGUF' },
+        @{ name='Gemma-3-1B';             pattern='gemma-3-1b.*Q4_K_M';     repo='bartowski/google_gemma-3-1b-it-GGUF' }
+    )
+} else {
+    $models = @(
+        @{ name='Llama-3.2-3B';           pattern='Llama-3\.2-3B.*Q4_K_M'; repo='bartowski/Llama-3.2-3B-Instruct-GGUF' },
+        @{ name='LFM2.5-2.6B';            pattern='LFM2\.5-2\.6B.*Q4_K_M';  repo='LiquidAI/LFM2.5-2.6B-GGUF' },
+        @{ name='Gemma-3-4B (current)';   pattern='gemma-3-4b.*Q4_K_M';     repo='bartowski/google_gemma-3-4b-it-GGUF' }
+    )
+}
 
 function Find-Local($pattern) {
     @($ModDir, (Join-Path $OldKit 'models')) | ForEach-Object {
@@ -157,9 +166,13 @@ function Ask($question) {
     $secs = $sw.Elapsed.TotalSeconds
     $json = [Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json
     $answer = [string]$json.choices[0].message.content
+    $thinking = [string]$json.choices[0].message.reasoning_content
+    $generated = $null
+    if ($json.timings -and $json.timings.predicted_n) { $generated = [int]$json.timings.predicted_n }
     $tps = $null
     if ($json.timings -and $json.timings.predicted_per_second) { $tps = [math]::Round([double]$json.timings.predicted_per_second, 2) }
-    return [pscustomobject]@{ answer = $answer.Trim(); seconds = [math]::Round($secs, 1); reply_tps = $tps }
+    return [pscustomobject]@{ answer = $answer.Trim(); seconds = [math]::Round($secs, 1); reply_tps = $tps
+                              tokens = $generated; thinking_chars = $thinking.Length }
 }
 
 # Close any engine left over from an earlier run.
@@ -182,9 +195,12 @@ foreach ($m in $models) {
                 Write-Host (" {0}s" -f $r.seconds)
             } catch {
                 Write-Host " failed: $($_.Exception.Message)" -ForegroundColor Red
-                $r = [pscustomobject]@{ answer = "(no answer: $($_.Exception.Message))"; seconds = $null; reply_tps = $null }
+                $r = [pscustomobject]@{ answer = "(no answer: $($_.Exception.Message))"; seconds = $null; reply_tps = $null; tokens = $null; thinking_chars = 0 }
             }
-            $results += [pscustomobject]@{ model = $m.name; question = $qi; answer = $r.answer; seconds = $r.seconds; reply_tps = $r.reply_tps }
+            $peak = $null
+            try { $proc.Refresh(); $peak = [math]::Round($proc.PeakWorkingSet64 / 1MB) } catch { }
+            $results += [pscustomobject]@{ model = $m.name; question = $qi; answer = $r.answer; seconds = $r.seconds
+                                           reply_tps = $r.reply_tps; tokens = $r.tokens; thinking_chars = $r.thinking_chars; peak_mb = $peak }
         }
     } finally {
         try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
@@ -194,7 +210,7 @@ foreach ($m in $models) {
 
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmm'
-$jsonPath = Join-Path $Root "quality-results-$stamp.json"
+$jsonPath = Join-Path $Root ("quality-results-" + $(if ($Small) { 'small-' } else { '' }) + "$stamp.json")
 $doc = [pscustomobject]@{
     machine = $env:COMPUTERNAME; date = (Get-Date).ToString('s'); system_prompt = $SystemPrompt
     questions = @($Questions | ForEach-Object { $_.q }); results = $results
@@ -240,7 +256,10 @@ foreach ($name in $shuffled) {
     $avgSecs = if ($rs.Count) { [math]::Round(($rs | Measure-Object seconds -Average).Average, 0) } else { '' }
     $tpsList = @($rs | Where-Object { $_.reply_tps } | ForEach-Object { $_.reply_tps })
     $avgTps = if ($tpsList.Count) { [math]::Round(($tpsList | Measure-Object -Average).Average, 1) } else { '' }
-    [void]$reveal.Append("<tr><td><b>$($labels[$name])</b></td><td>$(HtmlText $name)</td><td>$avgSecs s</td><td>$avgTps</td></tr>")
+    $peaks = @($results | Where-Object { $_.model -eq $name -and $_.peak_mb } | ForEach-Object { [double]$_.peak_mb })
+    $peakText = if ($peaks.Count) { "$((($peaks | Measure-Object -Maximum).Maximum)) MB" } else { '' }
+    $thinks = @($results | Where-Object { $_.model -eq $name -and [int]$_.thinking_chars -gt 0 }).Count
+    [void]$reveal.Append("<tr><td><b>$($labels[$name])</b></td><td>$(HtmlText $name)</td><td>$avgSecs s</td><td>$avgTps</td><td>$peakText</td><td>$thinks of $($Questions.Count) answers</td></tr>")
 }
 
 $html = @'
@@ -267,7 +286,7 @@ table{border-collapse:collapse;margin-top:10px}td,th{padding:6px 14px;border-bot
 <p class="sub">The same 10 questions, answered by each model. Models are hidden behind letters, shown in a random order. Pick the best answer for each question, then reveal.</p>
 __QUESTIONS__
 <section id="reveal"><h2>Which model is which</h2>
-<table><tr><th></th><th>Model</th><th>Avg time per answer</th><th>Reply speed (tok/s)</th></tr>__REVEAL__</table></section>
+<table><tr><th></th><th>Model</th><th>Avg time per answer</th><th>Reply speed (tok/s)</th><th>Peak memory</th><th>Hidden thinking</th></tr>__REVEAL__</table></section>
 <div id="score"><span id="tally">Pick a favourite for each question.</span><button onclick="document.getElementById('reveal').style.display='block';this.remove();location.hash='reveal'">Reveal models</button></div>
 </main><script>
 function tally(){var c={};document.querySelectorAll('input[type=radio]:checked').forEach(function(r){c[r.value]=(c[r.value]||0)+1});

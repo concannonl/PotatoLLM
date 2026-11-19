@@ -12,7 +12,7 @@ After that, use the **Offline Assistant** icon on the desktop. No admin rights a
 
 ## What it does
 
-- Checks the computer and picks the right model automatically: a 3B model with 8 GB of memory or more, otherwise a 1B model.
+- Checks the computer and picks the right model automatically. With 8 GB of memory or more it uses **Gemma 3 4B** with a 16k-token chat memory; otherwise it uses a 1B model (still under evaluation). See [docs/benchmarks.md](docs/benchmarks.md) for why.
 - Chooses the best engine settings for the CPU. The user never sees them.
 - Provides a simple native chat window with saved chats, a Stop button and New chat.
 - Shows a **chat memory** bar: how much of the model's context window the chat fills. Its tooltip explains it in plain language.
