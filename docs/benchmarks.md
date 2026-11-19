@@ -88,6 +88,8 @@ The system prompt now adds "Today is …" and "if you don't know something, say 
 - **LFM2.5-1.2B** answered the World Cup question honestly in both runs and got the summary fully right this time. The bill was close but wrong (210 × 24.5 = 5137.5p). It used no hidden thinking, peaked at about 1.3 GB and was the fastest.
 - **Llama-3.2-1B** was honest about the World Cup but wrongly claimed the hosts haven't been confirmed. It got the bill wrong again.
 
+**Decision:** keep Gemma-3-1B as the 4 GB default. It has the lowest memory use and the clearest explanations; the risk of it making things up is covered by the welcome note.
+
 **8 GB candidates**
 - **Gemma-3-4B** still got the bill, the bat and ball, and the World Cup right. However, the new line made it over-hedge: it added "I don't have the most up-to-date information on this" to the sky explanation. It also gave a stale population figure ("approximately 23 million").
 - **LFM2.5-2.6B** still thinks before every answer and was cut off mid-recipe. **Llama-3.2-3B** got the bill wrong again, this time £51.98.
