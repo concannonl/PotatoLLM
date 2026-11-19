@@ -263,8 +263,8 @@ namespace OfflineAssistant
             {
                 string today = DateTime.Now.ToString("dddd d MMMM yyyy", CultureInfo.GetCultureInfo("en-GB"));
                 return "You are a helpful assistant running privately on the user's own computer, with no internet access. " +
-                       "Today is " + today + ". Your knowledge comes from your training and may be out of date; " +
-                       "if you don't know something, say so instead of guessing. " +
+                       "Today is " + today + ". " +
+                       "If you are asked about recent or future events, or a fact you don't know, say you don't know instead of guessing. " +
                        "Answer clearly and concisely in plain text. Do not use markdown, tables or headings.";
             }
         }
@@ -647,7 +647,7 @@ namespace OfflineAssistant
             {
                 transcript.Clear();
                 AppendNote("Ready. Ask me anything. Everything stays on this computer and nothing is sent to the internet.\n" +
-                           "I can make mistakes, especially with sums, so please double-check anything important.");
+                           "I can make mistakes, especially with sums and facts, so please double-check anything important.");
             }
             input.Focus();
         }
