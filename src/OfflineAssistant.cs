@@ -8,6 +8,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -16,6 +17,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using System.Xml;
 
 namespace OfflineAssistant
 {
@@ -322,6 +324,13 @@ namespace OfflineAssistant
         // the "You" / "Assistant" labels), two or more = paragraph gap. Returns the block index.
         public int AddBlock(string text, Font font, Color color)
         {
+            return InsertBlock(blocks.Count, text, font, color);
+        }
+
+        // Inserts a block before position 'at' (blocks after it move down by one).
+        public int InsertBlock(int at, string text, Font font, Color color)
+        {
+            at = Math.Max(0, Math.Min(at, blocks.Count));
             string body = (text ?? "").Replace("\r\n", "\n");
             int trailing = 0;
             while (body.EndsWith("\n")) { body = body.Substring(0, body.Length - 1); trailing++; }
@@ -343,9 +352,9 @@ namespace OfflineAssistant
             b.SpaceAfter = space;
             b.IsHeader = trailing == 1;
             Wrap(b, 0);
-            blocks.Add(b);
+            blocks.Insert(at, b);
             Changed();
-            return blocks.Count - 1;
+            return at;
         }
 
         // Replaces a block's text. When text was only added at the end (the usual case while a
@@ -465,7 +474,7 @@ namespace OfflineAssistant
             pending = false;
             if (layoutWidth != TextWidth) RelayoutAll();
             int y = pad.Top;
-            foreach (var b in blocks) { b.Top = y; y += b.Height; }
+            foreach (var b in blocks) { b.Height = b.Lines.Count * b.Font.Height + b.SpaceAfter; b.Top = y; y += b.Height; }
             contentHeight = y + pad.Bottom;
             if (follow) targetY = MaxScroll;
             targetY = Math.Min(targetY, MaxScroll);
@@ -585,6 +594,122 @@ namespace OfflineAssistant
         }
     }
 
+    // Pulls the plain text out of documents the user adds to the chat.
+    static class DocumentReader
+    {
+        public static readonly string[] Supported = { ".txt", ".md", ".csv", ".log", ".rtf", ".docx", ".pdf" };
+        public const string FileFilter = "Documents (*.txt; *.docx; *.pdf; *.rtf; *.md; *.csv)|*.txt;*.docx;*.pdf;*.rtf;*.md;*.csv;*.log|All files (*.*)|*.*";
+
+        public static bool IsSupported(string path)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            return Array.IndexOf(Supported, ext) >= 0;
+        }
+
+        // Returns the text, or throws an exception whose message can be shown to the user.
+        // RTF needs a RichTextBox, so call this on the UI thread for .rtf files.
+        public static string Read(string path, string pdftotext)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            string text;
+            if (ext == ".doc")
+                throw new Exception("This is an old-style Word document. Open it in Word and use \"Save As\" to save it as a .docx file, then add that instead.");
+            else if (ext == ".docx") text = ReadDocx(path);
+            else if (ext == ".pdf") text = ReadPdf(path, pdftotext);
+            else if (ext == ".rtf")
+            {
+                using (var box = new RichTextBox())
+                {
+                    box.Rtf = File.ReadAllText(path, Encoding.Default);
+                    text = box.Text;
+                }
+            }
+            else if (IsSupported(path)) text = ReadPlainText(path);
+            else throw new Exception("This kind of file can't be read. Documents ending in .txt, .docx, .pdf or .rtf work.");
+            return Tidy(text);
+        }
+
+        static string ReadPlainText(string path)
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            try { return new UTF8Encoding(false, true).GetString(bytes).TrimStart('﻿'); }
+            catch (DecoderFallbackException) { return Encoding.Default.GetString(bytes); } // older Windows text files
+        }
+
+        // A .docx is a zip file; the text is in word/document.xml.
+        static string ReadDocx(string path)
+        {
+            const string W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            using (var file = File.OpenRead(path))
+            using (var zip = new ZipArchive(file, ZipArchiveMode.Read))
+            {
+                var entry = zip.GetEntry("word/document.xml");
+                if (entry == null) throw new Exception("This Word document seems to be damaged.");
+                var xml = new XmlDocument();
+                using (var s = entry.Open()) xml.Load(s);
+                var ns = new XmlNamespaceManager(xml.NameTable);
+                ns.AddNamespace("w", W);
+                var sb = new StringBuilder();
+                foreach (XmlNode p in xml.SelectNodes("//w:body//w:p", ns))
+                {
+                    foreach (XmlNode n in p.SelectNodes(".//w:t | .//w:tab | .//w:br | .//w:cr", ns))
+                    {
+                        if (n.LocalName == "t") sb.Append(n.InnerText);
+                        else if (n.LocalName == "tab") sb.Append('\t');
+                        else sb.Append('\n');
+                    }
+                    sb.Append('\n');
+                }
+                return sb.ToString();
+            }
+        }
+
+        static string ReadPdf(string path, string pdftotext)
+        {
+            if (string.IsNullOrEmpty(pdftotext) || !File.Exists(pdftotext))
+                throw new Exception("Reading PDFs isn't set up on this computer. Please run the installer again.");
+            string outFile = Path.Combine(Path.GetTempPath(), "offline-assistant-" + Guid.NewGuid().ToString("N") + ".txt");
+            try
+            {
+                var psi = new ProcessStartInfo(pdftotext, "-enc UTF-8 \"" + path + "\" \"" + outFile + "\"");
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.WorkingDirectory = Path.GetDirectoryName(pdftotext);
+                using (var p = Process.Start(psi))
+                {
+                    if (!p.WaitForExit(120000)) { try { p.Kill(); } catch { } throw new Exception("This PDF took too long to read."); }
+                    if (p.ExitCode == 3)
+                        throw new Exception("This PDF is locked, so its text can't be copied out.");
+                    if (p.ExitCode != 0)
+                        throw new Exception("This PDF couldn't be opened. It may be damaged or password-protected.");
+                }
+                if (!File.Exists(outFile)) throw new Exception("This PDF couldn't be read.");
+                string text = File.ReadAllText(outFile, Encoding.UTF8);
+                if (text.Replace("\f", "").Trim().Length < 20)
+                    throw new Exception("This PDF doesn't contain any text that can be read. It may be scanned pictures of pages.");
+                return text;
+            }
+            finally
+            {
+                try { if (File.Exists(outFile)) File.Delete(outFile); } catch { }
+            }
+        }
+
+        // Normalises line endings and spacing so the model doesn't waste time reading blank space.
+        static string Tidy(string text)
+        {
+            text = text.Replace("\r\n", "\n").Replace('\r', '\n').Replace('\f', '\n');
+            text = Regex.Replace(text, "[ \\t]+\\n", "\n");
+            text = Regex.Replace(text, "\\n{3,}", "\n\n");
+            return text.Trim();
+        }
+
+        public static int CountWords(string text)
+        {
+            return Regex.Matches(text, "\\S+").Count;
+        }
+    }
+
     // One saved chat in the sidebar list.
     class ChatInfo
     {
@@ -617,6 +742,14 @@ namespace OfflineAssistant
         Button sendButton;
         Button newChatButton;
         Label status;
+        Button attachButton;
+        Panel docBar;
+        Label docLabel;
+        Panel bottomPanel;
+        string attachedName, attachedText;   // a document waiting to be sent with the next message
+        int attachedWords;
+        string pdftotextPath;
+        double readTps;                      // how fast this computer reads text (tokens/s), measured as it goes
         MemoryBar memoryBar;
         Label memoryLabel;
         ToolTip tips;
@@ -681,6 +814,8 @@ namespace OfflineAssistant
             threads = cfg.GetInt("threads", 2);
             threadsBatch = cfg.GetInt("threads_batch", Environment.ProcessorCount);
             maxReply = cfg.GetInt("max_reply", 768);
+            pdftotextPath = cfg.Get("pdftotext", "");
+            readTps = cfg.GetInt("read_tps", 18);
             kvCache = cfg.Get("kv_cache", "f16");
             logPath = Path.Combine(appDir, "logs\\engine.log");
             chatsDir = Path.Combine(appDir, "chats");
@@ -801,6 +936,7 @@ namespace OfflineAssistant
 
             // Bottom: message box + Send
             var bottom = new Panel();
+            bottomPanel = bottom;
             bottom.Dock = DockStyle.Bottom;
             bottom.Height = 112;
             bottom.Padding = new Padding(14, 10, 14, 6);
@@ -810,7 +946,7 @@ namespace OfflineAssistant
             hint.Height = 20;
             hint.ForeColor = noteColor;
             hint.Font = new Font("Segoe UI", 8.5f);
-            hint.Text = "Press Enter to send, Shift+Enter for a new line. Everything stays on this computer.";
+            hint.Text = "Press Enter to send, Shift+Enter for a new line. You can also drag a document here. Everything stays on this computer.";
 
             input = new TextBox();
             input.Multiline = true;
@@ -831,10 +967,55 @@ namespace OfflineAssistant
             sendButton.FlatStyle = FlatStyle.System;
             sendButton.Click += (s, e) => SendOrStop();
 
+            attachButton = new Button();
+            attachButton.Text = "Add document";
+            attachButton.Dock = DockStyle.Left;
+            attachButton.Width = 116;
+            attachButton.FlatStyle = FlatStyle.System;
+            attachButton.Click += (s, e) => ChooseDocument();
+
+            var gapLeft = new Panel();
+            gapLeft.Dock = DockStyle.Left;
+            gapLeft.Width = 10;
+
+            // Shows the document waiting to be sent, with a way to remove it.
+            docBar = new Panel();
+            docBar.Dock = DockStyle.Top;
+            docBar.Height = 28;
+            docBar.Visible = false;
+            docBar.Padding = new Padding(0, 0, 0, 6);
+            docLabel = new Label();
+            docLabel.Dock = DockStyle.Fill;
+            docLabel.TextAlign = ContentAlignment.MiddleLeft;
+            docLabel.BackColor = Color.FromArgb(224, 236, 255);
+            docLabel.ForeColor = textColor;
+            docLabel.AutoEllipsis = true;
+            docLabel.Padding = new Padding(6, 0, 0, 0);
+            var removeDoc = new LinkLabel();
+            removeDoc.Text = "Remove";
+            removeDoc.Dock = DockStyle.Right;
+            removeDoc.Width = 64;
+            removeDoc.TextAlign = ContentAlignment.MiddleCenter;
+            removeDoc.BackColor = docLabel.BackColor;
+            removeDoc.LinkClicked += (s, e) => ClearAttachment();
+            docBar.Controls.Add(docLabel);
+            docBar.Controls.Add(removeDoc);
+
             bottom.Controls.Add(input);
+            bottom.Controls.Add(gapLeft);
+            bottom.Controls.Add(attachButton);
             bottom.Controls.Add(gap);
             bottom.Controls.Add(sendButton);
+            bottom.Controls.Add(docBar);
             bottom.Controls.Add(hint);
+
+            // Documents can also be dragged onto the window.
+            foreach (Control c in new Control[] { this, transcript, input })
+            {
+                c.AllowDrop = true;
+                c.DragEnter += OnDragEnter;
+                c.DragDrop += OnDragDrop;
+            }
 
             // Fill must be added first so the docked bars take their space before it.
             var main = new Panel();
@@ -1101,7 +1282,7 @@ namespace OfflineAssistant
                     info = new ChatInfo();
                     info.Id = currentChatId;
                     info.FilePath = Path.Combine(chatsDir, currentChatId + ".json");
-                    info.Title = MakeTitle((string)history[0]["content"]);
+                    info.Title = MakeTitle(history[0].ContainsKey("doc") ? history[0]["doc"] + ": " + ShownText(history[0]) : ShownText(history[0]));
                     chats.Add(info);
                 }
                 info.Updated = DateTime.Now;
@@ -1213,7 +1394,10 @@ namespace OfflineAssistant
                     {
                         var d = m as Dictionary<string, object>;
                         if (d == null || !d.ContainsKey("role") || !d.ContainsKey("content")) continue;
-                        loaded.Add(Msg(d["role"] as string, d["content"] as string ?? ""));
+                        var msg = Msg(d["role"] as string, d["content"] as string ?? "");
+                        foreach (var key in new[] { "doc", "doc_words", "question" })
+                            if (d.ContainsKey(key)) msg[key] = d[key];
+                        loaded.Add(msg);
                     }
             }
             catch
@@ -1234,10 +1418,9 @@ namespace OfflineAssistant
             transcript.Clear();
             foreach (var m in history)
             {
-                bool isUser = (string)m["role"] == "user";
-                Append(isUser ? "You\n" : "Assistant\n", headFont, isUser ? userColor : botColor);
-                string text = (string)m["content"];
-                Append((isUser ? text.Replace("\r\n", "\n") : Clean(text)) + "\n\n", bodyFont, textColor);
+                if ((string)m["role"] == "user") { ShowUserMessage(m); continue; }
+                Append("Assistant\n", headFont, botColor);
+                Append(Clean((string)m["content"]) + "\n\n", bodyFont, textColor);
             }
             transcript.EndUpdate();
             transcript.ScrollToEndNow();
@@ -1304,13 +1487,153 @@ namespace OfflineAssistant
             TextRenderer.DrawText(e.Graphics, FriendlyDate(info.Updated), smallFont, dateRect, noteColor, flags);
         }
 
+        // ---------------- Documents ----------------
+
+        void OnDragEnter(object sender, DragEventArgs e)
+        {
+            e.Effect = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+
+        void OnDragDrop(object sender, DragEventArgs e)
+        {
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files != null && files.Length > 0) AttachDocument(files[0]);
+        }
+
+        void ChooseDocument()
+        {
+            using (var dlg = new OpenFileDialog())
+            {
+                dlg.Title = "Add a document to the chat";
+                dlg.Filter = DocumentReader.FileFilter;
+                if (dlg.ShowDialog(this) == DialogResult.OK) AttachDocument(dlg.FileName);
+            }
+        }
+
+        // Rough time for this computer to read some text, using the speed measured on earlier replies.
+        string ReadingTime(int chars)
+        {
+            double seconds = (chars / 3.2) / Math.Max(1.0, readTps);
+            if (seconds < 90) return "under 2 minutes";
+            return "about " + (int)Math.Ceiling(seconds / 60) + " minutes";
+        }
+
+        void AttachDocument(string path)
+        {
+            if (busy) return;
+            string name = Path.GetFileName(path);
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (!DocumentReader.IsSupported(path) && ext != ".doc")
+            {
+                MessageBox.Show("\"" + name + "\" can't be read. Documents ending in .txt, .docx, .pdf or .rtf work.",
+                    AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            SetStatus("Reading the document...");
+            attachButton.Enabled = false;
+            Action<string, string> done = (docText, docError) =>
+            {
+                attachButton.Enabled = true;
+                SetStatus(ready ? "Ready" : status.Text);
+                if (docError != null)
+                {
+                    MessageBox.Show(docError, AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                OfferDocument(name, docText);
+            };
+            if (ext == ".rtf")
+            {
+                // Needs the UI thread.
+                string text = null, error = null;
+                try { text = DocumentReader.Read(path, pdftotextPath); } catch (Exception ex) { error = ex.Message; }
+                done(text, error);
+                return;
+            }
+            var t = new Thread(() =>
+            {
+                string text = null, error = null;
+                try { text = DocumentReader.Read(path, pdftotextPath); }
+                catch (Exception ex) { error = ex.Message; }
+                Ui(() => done(text, error));
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        void OfferDocument(string name, string text)
+        {
+            if (text.Length == 0)
+            {
+                MessageBox.Show("\"" + name + "\" seems to be empty.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            int words = DocumentReader.CountWords(text);
+            int maxChars = PromptBudgetChars() * 8 / 10;
+            if (text.Length > maxChars)
+            {
+                int maxWords = (int)((long)words * maxChars / text.Length);
+                MessageBox.Show(
+                    "\"" + name + "\" is too long for this computer to read in one go (about " + words.ToString("N0") +
+                    " words; the limit is about " + maxWords.ToString("N0") + ").\n\nTry a shorter document, or copy in just the part you need.",
+                    AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            double seconds = (text.Length / 3.2) / Math.Max(1.0, readTps);
+            if (seconds > 120)
+            {
+                var answer = MessageBox.Show(
+                    "\"" + name + "\" is about " + words.ToString("N0") + " words. This computer will take " + ReadingTime(text.Length) +
+                    " to read it before it can answer.\n\nAdd it anyway?",
+                    AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (answer != DialogResult.Yes) return;
+            }
+            attachedName = name;
+            attachedText = text;
+            attachedWords = words;
+            docLabel.Text = "Document: " + name + "  (about " + words.ToString("N0") + " words)";
+            if (!docBar.Visible) { docBar.Visible = true; bottomPanel.Height += docBar.Height; }
+            input.Focus();
+        }
+
+        void ClearAttachment()
+        {
+            attachedName = null;
+            attachedText = null;
+            attachedWords = 0;
+            if (docBar.Visible) { docBar.Visible = false; bottomPanel.Height -= docBar.Height; }
+        }
+
+        // What a user message looks like in the chat history (documents aren't shown in full).
+        static string DocLine(Dictionary<string, object> m)
+        {
+            if (!m.ContainsKey("doc")) return null;
+            int words = m.ContainsKey("doc_words") ? ToInt(m["doc_words"]) : 0;
+            return "Document: " + m["doc"] + (words > 0 ? "  (about " + words.ToString("N0") + " words)" : "");
+        }
+
+        static string ShownText(Dictionary<string, object> m)
+        {
+            return m.ContainsKey("question") ? (string)m["question"] : (string)m["content"];
+        }
+
+        void ShowUserMessage(Dictionary<string, object> m)
+        {
+            Append("You\n", headFont, userColor);
+            string docLine = DocLine(m);
+            if (docLine != null) Append(docLine + "\n", noteFont, noteColor);
+            Append(ShownText(m).Replace("\r\n", "\n") + "\n\n", bodyFont, textColor);
+        }
+
         void SendOrStop()
         {
             if (busy) { StopGenerating(); return; }
             if (!ready) return;
 
             string text = input.Text.Trim();
-            if (text.Length == 0) return;
+            bool hasDoc = attachedText != null;
+            if (text.Length == 0 && !hasDoc) return;
+            if (hasDoc && text.Length == 0) text = "Please summarise this document.";
             if (text.Length > Math.Min(PromptBudgetChars() * 8 / 10, MaxMessageChars))
             {
                 MessageBox.Show(
@@ -1319,12 +1642,31 @@ namespace OfflineAssistant
                 return;
             }
 
+            if (hasDoc && attachedText.Length + text.Length > PromptBudgetChars() * 8 / 10)
+            {
+                MessageBox.Show("The document and your message together are too long. Please shorten your message.",
+                    AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             input.Clear();
-            history.Add(Msg("user", text));
+            Dictionary<string, object> userMsg;
+            if (hasDoc)
+            {
+                // The model sees the document's full text; the chat shows just its name and the question.
+                userMsg = Msg("user",
+                    "I've shared a document called \"" + attachedName + "\". Its text is between the lines below.\n" +
+                    "----------\n" + attachedText + "\n----------\n\n" + text);
+                userMsg["doc"] = attachedName;
+                userMsg["doc_words"] = attachedWords;
+                userMsg["question"] = text;
+                ClearAttachment();
+            }
+            else userMsg = Msg("user", text);
+            history.Add(userMsg);
             dirty = true;
 
-            Append("You\n", headFont, userColor);
-            Append(text.Replace("\r\n", "\n") + "\n\n", bodyFont, textColor);
+            ShowUserMessage(userMsg);
             Append("Assistant\n", headFont, botColor);
             ShowAssistantPlaceholder();
             renderPending = false;
@@ -1338,10 +1680,26 @@ namespace OfflineAssistant
 
             int myId = ++genId;
             bool wasCold = coldStart;
+            int startBefore = historyStart;
             var messages = BuildMessages();
+            var forgotten = new List<string>();
+            for (int i = startBefore; i < historyStart; i++)
+                if (history[i].ContainsKey("doc")) forgotten.Add("\"" + history[i]["doc"] + "\"");
+            if (wasCold) // reopened chat: anything not re-read is forgotten
+                for (int i = 0; i < startBefore && i < history.Count; i++)
+                    if (history[i].ContainsKey("doc") && !forgotten.Contains("\"" + history[i]["doc"] + "\"")) forgotten.Add("\"" + history[i]["doc"] + "\"");
             coldStart = false;
             bool catchingUp = (wasCold && messages.Count > 2) || lastBuildTrimmed;
-            SetStatus(catchingUp ? "Catching up on the conversation... (this can take a minute or two)" : "Reading your message...");
+            if (forgotten.Count > 0 && assistantStart >= 1)
+            {
+                // Goes just above the "Assistant" label of the reply that's about to be written.
+                transcript.InsertBlock(assistantStart - 1,
+                    "The assistant no longer has " + string.Join(", ", forgotten.ToArray()) +
+                    " in its memory. Add it again if you have more questions about it.\n\n", noteFont, noteColor);
+                assistantStart++;
+            }
+            SetStatus(hasDoc ? "Reading the document... (" + ReadingTime(((string)userMsg["content"]).Length) + ")"
+                    : catchingUp ? "Catching up on the conversation... (this can take a minute or two)" : "Reading your message...");
             liveBase = EstimateTokens(messages);
             UpdateMemory(liveBase);
             var t = new Thread(() => Generate(messages, myId));
@@ -1372,7 +1730,8 @@ namespace OfflineAssistant
 
             var list = new List<object>();
             list.Add(Msg("system", SystemPrompt));
-            for (int i = historyStart; i < history.Count; i++) list.Add(history[i]);
+            for (int i = historyStart; i < history.Count; i++)
+                list.Add(Msg((string)history[i]["role"], (string)history[i]["content"]));
             return list;
         }
 
@@ -1418,6 +1777,8 @@ namespace OfflineAssistant
                         if (payload == "[DONE]") break;
                         object parsed = json.DeserializeObject(payload);
                         int reported = ReadTokenTotal(parsed);
+                        double speed = ReadPromptSpeed(parsed);
+                        if (speed > 0) readTps = speed;
                         if (reported > 0) realTotal = reported;
                         string piece = ExtractDelta(parsed);
                         if (string.IsNullOrEmpty(piece)) continue;
@@ -1454,6 +1815,17 @@ namespace OfflineAssistant
         {
             try { return o == null ? 0 : Convert.ToInt32(o, CultureInfo.InvariantCulture); }
             catch { return 0; }
+        }
+
+        // How fast the engine read the new part of the prompt (tokens/s), if it said and the sample is big enough.
+        static double ReadPromptSpeed(object parsed)
+        {
+            var obj = parsed as Dictionary<string, object>;
+            var timings = obj != null && obj.ContainsKey("timings") ? obj["timings"] as Dictionary<string, object> : null;
+            if (timings == null || !timings.ContainsKey("prompt_n") || !timings.ContainsKey("prompt_per_second")) return -1;
+            if (ToInt(timings["prompt_n"]) < 64) return -1;
+            try { return Convert.ToDouble(timings["prompt_per_second"], CultureInfo.InvariantCulture); }
+            catch { return -1; }
         }
 
         // The engine's last message says exactly how many tokens the chat used.

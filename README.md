@@ -15,6 +15,7 @@ After that, use the **Offline Assistant** icon on the desktop. No admin rights a
 - Checks the computer and picks the right model automatically. With 8 GB of memory or more it uses **Gemma 3 4B** with a 32k-token chat memory; otherwise it uses **Gemma 3 1B** with a 16k-token chat memory. Chat memory is stored in compact 8-bit form. See [docs/benchmarks.md](docs/benchmarks.md) for why.
 - Chooses the best engine settings for the CPU. The user never sees them.
 - Provides a simple native chat window with saved chats, a Stop button and New chat.
+- Lets you **add documents** (Word .docx, PDF, .txt, .rtf) with a button or by dragging them onto the window. The assistant reads the text; long documents show how long reading will take first. PDF support uses Poppler's `pdftotext`, which the installer downloads.
 - Shows a **chat memory** bar: how much of the model's context window the chat fills. Its tooltip explains it in plain language.
 - Keeps chats only on the computer, in `%LOCALAPPDATA%\OfflineAssistant\chats`.
 

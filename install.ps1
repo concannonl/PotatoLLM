@@ -12,7 +12,7 @@ $Install = Join-Path $env:LOCALAPPDATA 'OfflineAssistant'
 $Engine  = Join-Path $Install 'engine'
 $Models  = Join-Path $Install 'models'
 
-function Step($n, $msg) { Write-Host ""; Write-Host "[$n/6] $msg" -ForegroundColor Cyan }
+function Step($n, $msg) { Write-Host ""; Write-Host "[$n/7] $msg" -ForegroundColor Cyan }
 function Fail($msg) {
     Write-Host ""
     Write-Host $msg -ForegroundColor Red
@@ -33,11 +33,11 @@ Write-Host "  $($cpu.Name.Trim()), $cores cores, $ramGB GB memory"
 # Choose the model from memory size. See docs/benchmarks.md for why:
 # Gemma 3 4B gave the best answers and barely slows down as long chats fill its memory.
 if ($ramGB -ge 7) {
-    $model = @{ label='standard (Gemma 3 4B)'; gb=2.5; context=32768
+    $model = @{ label='standard (Gemma 3 4B)'; gb=2.5; context=32768; readTps=18
                 repo='bartowski/google_gemma-3-4b-it-GGUF'; file='google_gemma-3-4b-it-Q4_K_M.gguf'; pattern='gemma-3-4b.*Q4_K_M' }
 } else {
     # Gemma 3 1B: lowest memory use of the 1B models tested (~1 GB), clearest answers.
-    $model = @{ label='compact (Gemma 3 1B)'; gb=0.8; context=16384
+    $model = @{ label='compact (Gemma 3 1B)'; gb=0.8; context=16384; readTps=55
                 repo='bartowski/google_gemma-3-1b-it-GGUF'; file='google_gemma-3-1b-it-Q4_K_M.gguf'; pattern='gemma-3-1b.*Q4_K_M' }
 }
 Write-Host "  Chosen assistant size: $($model.label)"
@@ -119,7 +119,29 @@ Get-ChildItem -Path $Models -Filter '*.gguf' | Where-Object { $_.FullName -ne $m
 }
 
 # ---------- 4. Build the chat app ----------
-Step 4 "Building the chat window"
+Step 4 "Getting the PDF reader"
+# Poppler's pdftotext, packaged for Windows. Optional: without it, everything except PDFs still works.
+$Tools = Join-Path $Install 'tools'
+$pdftotext = Get-ChildItem -Path $Tools -Recurse -Filter 'pdftotext.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $pdftotext) {
+    try {
+        $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/oschwartz10612/poppler-windows/releases/latest' -Headers @{ 'User-Agent' = 'offline-assistant-installer' }
+        $asset = $rel.assets | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1
+        if ($asset) {
+            New-Item -ItemType Directory -Force -Path $Tools | Out-Null
+            $zip = Join-Path $Install 'poppler.zip'
+            curl.exe -L --fail -o $zip $asset.browser_download_url
+            if ($LASTEXITCODE -eq 0) {
+                Expand-Archive -Path $zip -DestinationPath (Join-Path $Tools 'poppler') -Force
+                $pdftotext = Get-ChildItem -Path $Tools -Recurse -Filter 'pdftotext.exe' | Select-Object -First 1
+            }
+            Remove-Item $zip -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+if ($pdftotext) { Write-Host "  Ready" } else { Write-Host "  Couldn't get it; PDFs won't be readable, everything else works." -ForegroundColor Yellow }
+
+Step 5 "Building the chat window"
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
 if (-not (Test-Path $csc)) { Fail "This computer is missing the .NET Framework 4, which Windows normally includes." }
@@ -127,7 +149,8 @@ $src = Join-Path $Here 'src\OfflineAssistant.cs'
 $exe = Join-Path $Install 'OfflineAssistant.exe'
 $ErrorActionPreference = 'Continue'
 $buildOut = & $csc /nologo /target:winexe /optimize+ /platform:x64 "/out:$exe" `
-    /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll $src 2>&1
+    /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll `
+    /r:System.Xml.dll /r:System.IO.Compression.dll $src 2>&1
 $buildCode = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($buildCode -ne 0) {
@@ -138,7 +161,7 @@ if ($buildCode -ne 0) {
 }
 
 # ---------- 5. Settings (chosen automatically, never shown to the user) ----------
-Step 5 "Choosing the best settings for this computer"
+Step 6 "Choosing the best settings for this computer"
 # Benchmarks on an X250: replies run equally fast on 1 thread per physical core,
 # reading long messages benefits from all logical threads.
 $threads      = [math]::Max(1, $cores)
@@ -151,12 +174,14 @@ $threadsBatch = [math]::Max($threads, $logical)
     "threads=$threads",
     "threads_batch=$threadsBatch",
     "max_reply=768",
-    "kv_cache=q8_0"
+    "kv_cache=q8_0",
+    "read_tps=$($model.readTps)",
+    "pdftotext=$(if ($pdftotext) { $pdftotext.FullName } else { '' })"
 ) | Set-Content -Path (Join-Path $Install 'config.ini') -Encoding UTF8
 Write-Host "  $threads threads for writing, $threadsBatch for reading"
 
 # ---------- 6. Shortcuts ----------
-Step 6 "Adding shortcuts"
+Step 7 "Adding shortcuts"
 $shell = New-Object -ComObject WScript.Shell
 foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
     $lnk = $shell.CreateShortcut((Join-Path $dir "$AppName.lnk"))
