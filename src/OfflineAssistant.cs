@@ -242,72 +242,346 @@ namespace OfflineAssistant
         }
     }
 
-    // Low-level helpers for smooth, flicker-free updates of the chat history box.
-    static class Native
+    // The chat history: a lightweight view the app draws itself. Each frame is drawn off-screen
+    // and shown whole (no flicker), and the view glides smoothly to new text instead of jumping.
+    class ChatView : Control
     {
-        const int WM_SETREDRAW = 0x000B;
-        const int WM_VSCROLL = 0x0115;
-        const int SB_BOTTOM = 7;
-        const int SB_VERT = 1;
-        const int SIF_ALL = 0x17;
-        const int EM_GETSCROLLPOS = 0x0400 + 221;
-        const int EM_SETSCROLLPOS = 0x0400 + 222;
-
-        [StructLayout(LayoutKind.Sequential)]
-        struct ScrollInfo
+        class Block
         {
-            public uint cbSize, fMask;
-            public int nMin, nMax;
-            public uint nPage;
-            public int nPos, nTrackPos;
+            public string Text = "";
+            public Font Font;
+            public Color Color;
+            public int SpaceAfter;
+            public bool IsHeader;
+            public List<string> Lines = new List<string>();
+            public List<int> Starts = new List<int>();   // where each line begins in Text
+            public int Top;
+            public int Height;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
-        public struct POINT { public int X, Y; }
+        readonly List<Block> blocks = new List<Block>();
+        readonly VScrollBar bar = new VScrollBar();
+        readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer();
+        readonly ContextMenuStrip menu = new ContextMenuStrip();
+        readonly Padding pad = new Padding(18, 14, 14, 18);
+        double scrollY, targetY;
+        bool follow = true;          // keep the newest text in view
+        int contentHeight;
+        int layoutWidth = -1;
+        int updateDepth;
+        bool pending;
+        int menuBlock = -1;
+        const TextFormatFlags Flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
-        [DllImport("user32.dll")]
-        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("user32.dll")]
-        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref POINT lParam);
-
-        [DllImport("user32.dll")]
-        static extern bool GetScrollInfo(IntPtr hWnd, int bar, ref ScrollInfo info);
-
-        [DllImport("user32.dll")]
-        static extern bool RedrawWindow(IntPtr hWnd, IntPtr rect, IntPtr region, uint flags);
-
-        const uint RDW_INVALIDATE = 0x0001, RDW_NOERASE = 0x0020, RDW_UPDATENOW = 0x0100, RDW_FRAME = 0x0400;
-
-        // Turning redraw back on paints the finished result once, without first blanking the
-        // background (blanking is what makes text flash).
-        public static void SetRedraw(Control c, bool on)
+        public ChatView()
         {
-            SendMessage(c.Handle, WM_SETREDRAW, (IntPtr)(on ? 1 : 0), IntPtr.Zero);
-            if (on) RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero, RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW | RDW_FRAME);
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            BackColor = Color.White;
+
+            bar.Dock = DockStyle.Right;
+            bar.Enabled = false;
+            bar.Scroll += (s, e) =>
+            {
+                anim.Stop();
+                scrollY = targetY = bar.Value;
+                follow = targetY >= MaxScroll - 2;
+                Invalidate();
+            };
+            Controls.Add(bar);
+
+            anim.Interval = 15;
+            anim.Tick += AnimTick;
+
+            var copyOne = new ToolStripMenuItem("Copy this message");
+            copyOne.Click += (s, e) => CopyMessage();
+            var copyAll = new ToolStripMenuItem("Copy the whole chat");
+            copyAll.Click += (s, e) => CopyAll();
+            menu.Items.Add(copyOne);
+            menu.Items.Add(copyAll);
         }
 
-        // True when the view is at (or very near) the bottom, or there's nothing to scroll.
-        public static bool IsAtBottom(Control c)
+        public bool IsEmpty { get { return blocks.Count == 0; } }
+
+        int ViewHeight { get { return Math.Max(1, ClientSize.Height); } }
+        int MaxScroll { get { return Math.Max(0, contentHeight - ViewHeight); } }
+        int TextWidth { get { return Math.Max(40, ClientSize.Width - bar.Width - pad.Left - pad.Right); } }
+
+        // ---- Public API ----
+
+        public void Clear()
         {
-            var si = new ScrollInfo();
-            si.cbSize = (uint)Marshal.SizeOf(typeof(ScrollInfo));
-            si.fMask = SIF_ALL;
-            if (!GetScrollInfo(c.Handle, SB_VERT, ref si)) return true;
-            if (si.nPage == 0 || si.nMax - si.nMin + 1 <= si.nPage) return true;
-            return si.nPos + (int)si.nPage >= si.nMax - 40;
+            blocks.Clear();
+            scrollY = targetY = 0;
+            follow = true;
+            anim.Stop();
+            Changed();
         }
 
-        public static POINT GetScrollPos(Control c)
+        // Adds text as a new block. Trailing newlines become spacing: one = small gap (used after
+        // the "You" / "Assistant" labels), two or more = paragraph gap. Returns the block index.
+        public int AddBlock(string text, Font font, Color color)
         {
-            var p = new POINT();
-            SendMessage(c.Handle, EM_GETSCROLLPOS, IntPtr.Zero, ref p);
-            return p;
+            string body = (text ?? "").Replace("\r\n", "\n");
+            int trailing = 0;
+            while (body.EndsWith("\n")) { body = body.Substring(0, body.Length - 1); trailing++; }
+            int space = trailing == 0 ? 0 : trailing == 1 ? 2 : font.Height * 3 / 4;
+            if (body.Length == 0)
+            {
+                if (blocks.Count > 0)
+                {
+                    var last = blocks[blocks.Count - 1];
+                    last.SpaceAfter = Math.Max(last.SpaceAfter, space);
+                    Changed();
+                }
+                return blocks.Count - 1;
+            }
+            var b = new Block();
+            b.Text = body;
+            b.Font = font;
+            b.Color = color;
+            b.SpaceAfter = space;
+            b.IsHeader = trailing == 1;
+            Wrap(b, 0);
+            blocks.Add(b);
+            Changed();
+            return blocks.Count - 1;
         }
 
-        public static void SetScrollPos(Control c, POINT p)
+        // Replaces a block's text. When text was only added at the end (the usual case while a
+        // reply streams in), only the last line onwards is re-wrapped.
+        public void SetBlock(int index, string text, Font font, Color color)
         {
-            SendMessage(c.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref p);
+            if (index < 0 || index >= blocks.Count) return;
+            var b = blocks[index];
+            string body = (text ?? "").Replace("\r\n", "\n");
+            bool extends = b.Font == font && b.Lines.Count > 0 && body.StartsWith(b.Text, StringComparison.Ordinal);
+            int from = extends ? b.Starts[b.Starts.Count - 1] : 0;
+            if (extends)
+            {
+                b.Lines.RemoveAt(b.Lines.Count - 1);
+                b.Starts.RemoveAt(b.Starts.Count - 1);
+            }
+            else
+            {
+                b.Lines.Clear();
+                b.Starts.Clear();
+            }
+            b.Text = body;
+            b.Font = font;
+            b.Color = color;
+            Wrap(b, from);
+            Changed();
+        }
+
+        public void BeginUpdate() { updateDepth++; }
+
+        public void EndUpdate()
+        {
+            if (updateDepth > 0) updateDepth--;
+            if (updateDepth == 0 && pending) Changed();
+        }
+
+        public void ScrollToEndNow()
+        {
+            anim.Stop();
+            follow = true;
+            scrollY = targetY = MaxScroll;
+            SyncBar();
+            Invalidate();
+        }
+
+        // ---- Layout ----
+
+        static int Measure(string s, Font f)
+        {
+            if (s.Length == 0) return 0;
+            return TextRenderer.MeasureText(s, f, new Size(int.MaxValue, int.MaxValue), Flags).Width;
+        }
+
+        // Word-wraps b.Text from position 'from' (which must be the start of a line) to the end.
+        void Wrap(Block b, int from)
+        {
+            int width = TextWidth;
+            string t = b.Text;
+            int pos = from;
+            while (true)
+            {
+                int nl = t.IndexOf('\n', pos);
+                int end = nl < 0 ? t.Length : nl;
+                WrapParagraph(b, t, pos, end, width);
+                if (nl < 0) break;
+                pos = nl + 1;
+            }
+            if (b.Lines.Count == 0) { b.Lines.Add(""); b.Starts.Add(0); }
+            b.Height = b.Lines.Count * b.Font.Height + b.SpaceAfter;
+        }
+
+        static void WrapParagraph(Block b, string t, int start, int end, int width)
+        {
+            if (start >= end) { b.Lines.Add(""); b.Starts.Add(start); return; }
+            int lineStart = start;
+            while (lineStart < end)
+            {
+                int fit = -1;
+                int j = lineStart;
+                while (j <= end)
+                {
+                    int space = j < end ? t.IndexOf(' ', j, end - j) : -1;
+                    int wordEnd = space < 0 ? end : space;
+                    if (Measure(t.Substring(lineStart, wordEnd - lineStart), b.Font) > width) break;
+                    fit = wordEnd;
+                    if (space < 0) break;
+                    j = wordEnd + 1;
+                }
+                if (fit < 0)
+                {
+                    // A single word wider than the view: break it by characters.
+                    int k = lineStart + 1;
+                    while (k < end && Measure(t.Substring(lineStart, k - lineStart + 1), b.Font) <= width) k++;
+                    fit = k;
+                }
+                b.Lines.Add(t.Substring(lineStart, fit - lineStart));
+                b.Starts.Add(lineStart);
+                lineStart = fit;
+                if (lineStart < end && t[lineStart] == ' ') lineStart++;
+            }
+        }
+
+        void RelayoutAll()
+        {
+            layoutWidth = TextWidth;
+            foreach (var b in blocks)
+            {
+                b.Lines.Clear();
+                b.Starts.Clear();
+                Wrap(b, 0);
+            }
+        }
+
+        void Changed()
+        {
+            if (updateDepth > 0) { pending = true; return; }
+            pending = false;
+            if (layoutWidth != TextWidth) RelayoutAll();
+            int y = pad.Top;
+            foreach (var b in blocks) { b.Top = y; y += b.Height; }
+            contentHeight = y + pad.Bottom;
+            if (follow) targetY = MaxScroll;
+            targetY = Math.Min(targetY, MaxScroll);
+            if (scrollY > MaxScroll) scrollY = MaxScroll;
+            SyncBar();
+            if (Math.Abs(targetY - scrollY) > 0.5) anim.Start();
+            Invalidate();
+        }
+
+        void SyncBar()
+        {
+            int max = MaxScroll;
+            if (max <= 0)
+            {
+                bar.Enabled = false;
+                return;
+            }
+            bar.Enabled = true;
+            bar.Minimum = 0;
+            bar.Maximum = max + ViewHeight - 1;
+            bar.LargeChange = ViewHeight;
+            bar.SmallChange = Math.Max(1, Font.Height);
+            bar.Value = Math.Max(0, Math.Min(max, (int)Math.Round(scrollY)));
+        }
+
+        // Eases towards the target position, so new lines slide into view.
+        void AnimTick(object sender, EventArgs e)
+        {
+            double diff = targetY - scrollY;
+            if (Math.Abs(diff) <= 0.5) { scrollY = targetY; anim.Stop(); }
+            else
+            {
+                double step = diff * 0.25;
+                if (Math.Abs(step) < 1) step = Math.Sign(diff);
+                scrollY += step;
+            }
+            SyncBar();
+            Invalidate();
+        }
+
+        // ---- Input ----
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            int lineH = blocks.Count > 0 ? blocks[0].Font.Height : 20;
+            targetY = Math.Max(0, Math.Min(MaxScroll, targetY - e.Delta / 120.0 * 3 * lineH));
+            follow = targetY >= MaxScroll - 2;
+            anim.Start();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Right || blocks.Count == 0) return;
+            double docY = e.Y + scrollY;
+            menuBlock = -1;
+            for (int i = 0; i < blocks.Count; i++)
+                if (docY >= blocks[i].Top && docY < blocks[i].Top + blocks[i].Height) { menuBlock = i; break; }
+            menu.Items[0].Enabled = menuBlock >= 0;
+            menu.Show(this, e.Location);
+        }
+
+        void CopyMessage()
+        {
+            if (menuBlock < 0 || menuBlock >= blocks.Count) return;
+            int i = menuBlock;
+            if (blocks[i].IsHeader && i + 1 < blocks.Count) i++;
+            SetClipboard(blocks[i].Text);
+        }
+
+        void CopyAll()
+        {
+            var sb = new StringBuilder();
+            foreach (var b in blocks)
+            {
+                sb.Append(b.Text);
+                sb.Append(b.IsHeader ? "\r\n" : "\r\n\r\n");
+            }
+            SetClipboard(sb.ToString().TrimEnd());
+        }
+
+        static void SetClipboard(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            try { Clipboard.SetText(text.Replace("\r\n", "\n").Replace("\n", "\r\n")); } catch { }
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (IsHandleCreated) Changed();
+        }
+
+        // ---- Drawing ----
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(BackColor);
+            int offset = (int)Math.Round(scrollY);
+            int bottom = ClientSize.Height;
+            foreach (var b in blocks)
+            {
+                int top = b.Top - offset;
+                if (top > bottom) break;
+                if (top + b.Height < 0) continue;
+                int lh = b.Font.Height;
+                for (int i = 0; i < b.Lines.Count; i++)
+                {
+                    int y = top + i * lh;
+                    if (y + lh < 0) continue;
+                    if (y > bottom) break;
+                    TextRenderer.DrawText(g, b.Lines[i], b.Font, new Point(pad.Left, y), b.Color, BackColor, Flags);
+                }
+            }
         }
     }
 
@@ -338,7 +612,7 @@ namespace OfflineAssistant
             }
         }
 
-        RichTextBox transcript;
+        ChatView transcript;
         TextBox input;
         Button sendButton;
         Button newChatButton;
@@ -363,7 +637,6 @@ namespace OfflineAssistant
         string shownReply = "";        // the cleaned reply text currently on screen
         bool placeholderShown;         // the "..." shown before the first word arrives
         bool renderPending;            // new words waiting to be drawn
-        bool unlockWrites;             // set if this Windows version won't write to a read-only box
         System.Windows.Forms.Timer renderTimer;
         bool dirty;                // current chat has changes not yet saved
         int ctx, threads, threadsBatch, maxReply;
@@ -435,16 +708,11 @@ namespace OfflineAssistant
             var transcriptPanel = new Panel();
             transcriptPanel.Dock = DockStyle.Fill;
             transcriptPanel.BackColor = Color.White;
-            transcriptPanel.Padding = new Padding(18, 14, 8, 8);
+            transcriptPanel.Padding = new Padding(0);
 
-            transcript = new RichTextBox();
+            transcript = new ChatView();
             transcript.Dock = DockStyle.Fill;
-            transcript.BorderStyle = BorderStyle.None;
-            transcript.ReadOnly = true;
-            transcript.BackColor = Color.White;
             transcript.Font = bodyFont;
-            transcript.DetectUrls = false;
-            transcript.ScrollBars = RichTextBoxScrollBars.Vertical;
 
             renderTimer = new System.Windows.Forms.Timer();
             renderTimer.Interval = 100;
@@ -605,65 +873,9 @@ namespace OfflineAssistant
             try { if (!IsDisposed && IsHandleCreated) BeginInvoke(a); } catch { }
         }
 
-        // Writes text over the current selection. Normally works on the read-only box directly
-        // (switching read-only off and on makes Windows repaint everything, which flickers).
-        void WriteSelected(string text)
-        {
-            if (!unlockWrites)
-            {
-                int before = transcript.TextLength;
-                int selected = transcript.SelectionLength;
-                transcript.SelectedText = text;
-                bool blocked = text.Length > 0 && transcript.TextLength == before && text.Length != selected;
-                if (!blocked) return;
-                unlockWrites = true;
-            }
-            transcript.ReadOnly = false;
-            transcript.SelectedText = text;
-            transcript.ReadOnly = true;
-        }
-
-        void InsertAtEnd(string text, Font font, Color color)
-        {
-            transcript.Select(transcript.TextLength, 0);
-            transcript.SelectionFont = font;
-            transcript.SelectionColor = color;
-            WriteSelected(text);
-        }
-
-        // Runs a change to the chat history as one atomic step: drawing is frozen, the text is
-        // changed, the view is positioned with a single scroll, and the result is painted once,
-        // so no half-finished state ever reaches the screen. Follows the bottom if the user is
-        // there; otherwise leaves them where they are. Keeps their selection.
-        void UpdateTranscript(Action change, bool bigRewrite)
-        {
-            bool follow = Native.IsAtBottom(transcript);
-            int selStart = transcript.SelectionStart, selLength = transcript.SelectionLength;
-            Native.POINT pos = Native.GetScrollPos(transcript);
-            Freeze();
-            try { change(); }
-            finally
-            {
-                if (follow)
-                {
-                    transcript.Select(transcript.TextLength, 0);
-                    transcript.ScrollToCaret();
-                    pos = Native.GetScrollPos(transcript);
-                }
-                if (selLength > 0) transcript.Select(selStart, selLength);
-                Native.SetScrollPos(transcript, pos); // undo any scroll caused by restoring the selection
-                Unfreeze();
-            }
-        }
-
-        // Freezes drawing of the chat history; nested calls are fine, it repaints on the last Unfreeze.
-        int freezeDepth;
-        void Freeze() { if (freezeDepth++ == 0) Native.SetRedraw(transcript, false); }
-        void Unfreeze() { if (freezeDepth > 0 && --freezeDepth == 0) Native.SetRedraw(transcript, true); }
-
         void Append(string text, Font font, Color color)
         {
-            UpdateTranscript(() => InsertAtEnd(text, font, color), false);
+            transcript.AddBlock(text, font, color);
         }
 
         void AppendNote(string text)
@@ -673,33 +885,18 @@ namespace OfflineAssistant
 
         void ShowAssistantPlaceholder()
         {
-            assistantStart = transcript.TextLength;
-            Append("...", bodyFont, noteColor);
+            assistantStart = transcript.AddBlock("...", bodyFont, noteColor);
             shownReply = "";
             placeholderShown = true;
         }
 
-        // Shows the reply so far. Usually only the new words are added at the end;
-        // the whole reply is rewritten only when earlier text changed (e.g. markdown cleaned up).
+        // Shows the reply so far in the assistant's block.
         void ReplaceAssistantText(string text)
         {
             if (assistantStart < 0) return;
-            if (!placeholderShown && text.StartsWith(shownReply, StringComparison.Ordinal))
-            {
-                string added = text.Substring(shownReply.Length);
-                if (added.Length > 0) Append(added, bodyFont, textColor);
-            }
-            else
-            {
-                UpdateTranscript(() =>
-                {
-                    transcript.Select(assistantStart, Math.Max(0, transcript.TextLength - assistantStart));
-                    transcript.SelectionFont = bodyFont;
-                    transcript.SelectionColor = textColor;
-                    WriteSelected(text);
-                }, true);
-                placeholderShown = false;
-            }
+            if (!placeholderShown && text == shownReply) return;
+            transcript.SetBlock(assistantStart, text, bodyFont, textColor);
+            placeholderShown = false;
             shownReply = text;
         }
 
@@ -717,6 +914,7 @@ namespace OfflineAssistant
             s = s.Replace("\r\n", "\n");
             s = Regex.Replace(s, "```[A-Za-z0-9_+-]*\\n?", "");
             s = s.Replace("**", "").Replace("__", "").Replace("`", "");
+            s = Regex.Replace(s, @"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", "$1"); // *italic*
             s = Regex.Replace(s, @"(?m)^#{1,6}\s*", "");
             s = Regex.Replace(s, @"(?m)^(\s*)[\*\-]\s+", "$1• ");
             return s.TrimStart();
@@ -736,7 +934,7 @@ namespace OfflineAssistant
                 return;
             }
             SetStatus("Getting ready... (this takes up to a minute)");
-            if (transcript.TextLength == 0) AppendNote("Getting ready. This can take up to a minute after the computer starts.");
+            if (transcript.IsEmpty) AppendNote("Getting ready. This can take up to a minute after the computer starts.");
 
             var t = new Thread(() =>
             {
@@ -1032,7 +1230,7 @@ namespace OfflineAssistant
             coldStart = true;
             dirty = false;
 
-            Freeze(); // draw the whole chat in one go
+            transcript.BeginUpdate(); // lay out the whole chat in one go
             transcript.Clear();
             foreach (var m in history)
             {
@@ -1041,9 +1239,8 @@ namespace OfflineAssistant
                 string text = (string)m["content"];
                 Append((isUser ? text.Replace("\r\n", "\n") : Clean(text)) + "\n\n", bodyFont, textColor);
             }
-            transcript.Select(transcript.TextLength, 0);
-            transcript.ScrollToCaret();
-            Unfreeze();
+            transcript.EndUpdate();
+            transcript.ScrollToEndNow();
             // A question left unanswered (e.g. the app was closed mid-reply) stays visible,
             // but isn't sent again, so the next message starts cleanly.
             if (history.Count > 0 && (string)history[history.Count - 1]["role"] == "user")
