@@ -4,11 +4,19 @@ A private AI chat assistant that runs entirely on cheap, low-powered laptops, su
 
 ## Install (Windows 10/11, 64-bit)
 
-1. On this page, click **Code → Download ZIP** and unzip it.
-2. Double-click **Install Offline Assistant.bat**.
-3. Wait for the download to finish (about 1–2 GB). The assistant then opens by itself.
+1. Download **OfflineAssistant-Setup.exe** from the [latest release](https://github.com/concannonl/PotatoLLM/releases/latest).
+2. Run it and click through the installer. No admin rights are needed.
+3. The first time it opens, the assistant downloads the right AI model for the computer (about 1–3 GB). After that it works offline.
 
-After that, use the **Offline Assistant** icon on the desktop. No admin rights are needed.
+Windows may warn that the installer is from an unknown publisher, because it isn't code-signed yet. Click **More info**, then **Run anyway**.
+
+**Installing without internet** (for example from a USB stick): put the model file next to `OfflineAssistant-Setup.exe` before running it. Use [Gemma 3 4B](https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf) for laptops with 8 GB of memory or more, or [Gemma 3 1B](https://huggingface.co/bartowski/google_gemma-3-1b-it-GGUF/resolve/main/google_gemma-3-1b-it-Q4_K_M.gguf) for 4 GB. The installer copies it instead of downloading.
+
+**Uninstalling:** use Windows Settings → Apps. It asks before deleting your saved chats.
+
+### For developers
+
+Every push to `main` builds the installer on GitHub Actions (`.github/workflows/build.yml` runs `build/build.ps1`). Pushing a tag such as `v0.2.0` also publishes a release. `install.ps1` is the older script that builds from source on the target machine.
 
 ## What it does
 
@@ -23,13 +31,13 @@ After that, use the **Offline Assistant** icon on the desktop. No admin rights a
 
 | Part | What it is |
 |---|---|
-| `install.ps1` | Downloads [llama.cpp](https://github.com/ggml-org/llama.cpp) (Windows CPU build) and the model, writes `config.ini`, builds the app, creates shortcuts |
+| `build/build.ps1`, `installer/` | Compiles the app and packages it with [llama.cpp](https://github.com/ggml-org/llama.cpp) (Windows CPU build) and Poppler's `pdftotext` into an Inno Setup installer |
 | `src/OfflineAssistant.cs` | The chat window. It is C# 5 / WinForms, so it compiles on the user's machine with the `csc.exe` built into Windows, with nothing extra to install |
 | `benchmark/` | A one-click speed test for llama.cpp across several small models and thread counts |
 
 The app starts `llama-server.exe` in the background on a random local port and talks to it through the OpenAI-style chat API, streaming the reply. A Windows job object makes sure the engine closes whenever the app closes. Older messages are dropped in large chunks, so the engine's prompt cache stays valid between replies.
 
-Everything is installed to `%LOCALAPPDATA%\OfflineAssistant`. The logs are in its `logs` folder.
+Everything is installed to `%LOCALAPPDATA%\OfflineAssistant`. The logs are in its `logs` folder. The app works out its own settings from the computer's memory and processor; an optional `config.ini` can override them.
 
 ## Performance
 

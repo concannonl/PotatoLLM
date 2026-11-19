@@ -12,3 +12,6 @@ benchmark/quality-report-*
 benchmark/quality-logs/
 benchmark/long-context-results-*
 benchmark/long-context-logs/
+dist/
+output/
+build-tmp/

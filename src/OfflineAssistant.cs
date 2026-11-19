@@ -72,6 +72,84 @@ namespace OfflineAssistant
         }
     }
 
+    // Works out what this computer can run, so the app needs no settings.
+    static class Machine
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        class MemoryStatus
+        {
+            public uint dwLength = (uint)Marshal.SizeOf(typeof(MemoryStatus));
+            public uint dwMemoryLoad;
+            public ulong ullTotalPhys, ullAvailPhys, ullTotalPageFile, ullAvailPageFile, ullTotalVirtual, ullAvailVirtual, ullAvailExtendedVirtual;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatus status);
+
+        public static double TotalMemoryGB()
+        {
+            var m = new MemoryStatus();
+            return GlobalMemoryStatusEx(m) ? m.ullTotalPhys / (1024.0 * 1024 * 1024) : 4;
+        }
+
+        public static int PhysicalCores()
+        {
+            int cores = 0;
+            try
+            {
+                using (var searcher = new System.Management.ManagementObjectSearcher("select NumberOfCores from Win32_Processor"))
+                    foreach (System.Management.ManagementObject o in searcher.Get())
+                        cores += Convert.ToInt32(o["NumberOfCores"]);
+            }
+            catch { }
+            return cores > 0 ? cores : Math.Max(1, Environment.ProcessorCount / 2);
+        }
+    }
+
+    // The two models the app can use; chosen by how much memory the computer has.
+    // See docs/benchmarks.md for how these were picked.
+    class ModelChoice
+    {
+        public string Label, Repo, File, Pattern;
+        public double SizeGB;
+        public int Context, ReadTps;
+
+        public static ModelChoice ForThisComputer()
+        {
+            var m = new ModelChoice();
+            if (Machine.TotalMemoryGB() >= 7)
+            {
+                m.Label = "Gemma 3 4B"; m.Repo = "bartowski/google_gemma-3-4b-it-GGUF";
+                m.File = "google_gemma-3-4b-it-Q4_K_M.gguf"; m.Pattern = "gemma-3-4b.*Q4_K_M";
+                m.SizeGB = 2.5; m.Context = 32768; m.ReadTps = 18;
+            }
+            else
+            {
+                m.Label = "Gemma 3 1B"; m.Repo = "bartowski/google_gemma-3-1b-it-GGUF";
+                m.File = "google_gemma-3-1b-it-Q4_K_M.gguf"; m.Pattern = "gemma-3-1b.*Q4_K_M";
+                m.SizeGB = 0.8; m.Context = 16384; m.ReadTps = 55;
+            }
+            return m;
+        }
+
+        // An already-present copy (from an earlier install, or an offline bundle), if any.
+        public string FindLocal(string modelsDir)
+        {
+            try
+            {
+                foreach (var f in Directory.GetFiles(modelsDir, "*.gguf"))
+                {
+                    string name = Path.GetFileName(f);
+                    if (Regex.IsMatch(name, Pattern, RegexOptions.IgnoreCase) && !name.Contains("mmproj") &&
+                        new FileInfo(f).Length > 100L * 1024 * 1024)
+                        return f;
+                }
+            }
+            catch { }
+            return null;
+        }
+    }
+
     // Puts the engine in a Windows "job" so it is closed automatically if this app closes or crashes.
     static class Job
     {
@@ -749,6 +827,9 @@ namespace OfflineAssistant
         string attachedName, attachedText;   // a document waiting to be sent with the next message
         int attachedWords;
         string pdftotextPath;
+        ModelChoice modelChoice;
+        string modelsDir;
+        ProgressBar downloadBar;
 
         // Saved chat memory: the engine's working memory for a chat, written to disk when you leave
         // the chat and loaded back when you return, so nothing has to be re-read.
@@ -825,16 +906,21 @@ namespace OfflineAssistant
         public ChatForm()
         {
             appDir = Path.GetDirectoryName(Application.ExecutablePath);
+            // Everything is worked out from the hardware; an optional config.ini can override it.
             var cfg = new Config(Path.Combine(appDir, "config.ini"));
-            enginePath = cfg.Get("engine", Path.Combine(appDir, "engine\\llama-server.exe"));
+            modelChoice = ModelChoice.ForThisComputer();
+            modelsDir = Path.Combine(appDir, "models");
+            enginePath = cfg.Get("engine", FindFile(Path.Combine(appDir, "engine"), "llama-server.exe"));
             modelPath = cfg.Get("model", "");
-            ctx = cfg.GetInt("context", 4096);
-            threads = cfg.GetInt("threads", 2);
-            threadsBatch = cfg.GetInt("threads_batch", Environment.ProcessorCount);
+            if (!File.Exists(modelPath)) modelPath = modelChoice.FindLocal(modelsDir) ?? Path.Combine(modelsDir, modelChoice.File);
+            ctx = cfg.GetInt("context", modelChoice.Context);
+            int cores = Machine.PhysicalCores();
+            threads = cfg.GetInt("threads", cores);              // replies: one thread per core (measured fastest)
+            threadsBatch = cfg.GetInt("threads_batch", Math.Max(cores, Environment.ProcessorCount)); // reading: all threads
             maxReply = cfg.GetInt("max_reply", 768);
-            pdftotextPath = cfg.Get("pdftotext", "");
-            readTps = cfg.GetInt("read_tps", 18);
-            kvCache = cfg.Get("kv_cache", "f16");
+            pdftotextPath = cfg.Get("pdftotext", FindFile(Path.Combine(appDir, "tools"), "pdftotext.exe"));
+            readTps = cfg.GetInt("read_tps", modelChoice.ReadTps);
+            kvCache = cfg.Get("kv_cache", "q8_0");
             logPath = Path.Combine(appDir, "logs\\engine.log");
             chatsDir = Path.Combine(appDir, "chats");
             memoryDir = Path.Combine(appDir, "memory");
@@ -914,7 +1000,12 @@ namespace OfflineAssistant
             memoryPanel.Controls.Add(memoryLabel);
             memoryPanel.Controls.Add(memoryBar);
 
+            downloadBar = new ProgressBar();
+            downloadBar.Dock = DockStyle.Right;
+            downloadBar.Width = 160;
+            downloadBar.Visible = false;
             top.Controls.Add(status);
+            top.Controls.Add(downloadBar);
             top.Controls.Add(memoryPanel);
 
             // Sidebar: New chat + saved chats
@@ -1076,6 +1167,19 @@ namespace OfflineAssistant
 
         void SetStatus(string text) { status.Text = text; }
 
+        static string FindFile(string dir, string name)
+        {
+            try
+            {
+                string direct = Path.Combine(dir, name);
+                if (File.Exists(direct)) return direct;
+                if (Directory.Exists(dir))
+                    foreach (var f in Directory.GetFiles(dir, name, SearchOption.AllDirectories)) return f;
+            }
+            catch { }
+            return Path.Combine(dir, name);
+        }
+
         void Ui(Action a)
         {
             try { if (!IsDisposed && IsHandleCreated) BeginInvoke(a); } catch { }
@@ -1140,17 +1244,159 @@ namespace OfflineAssistant
 
         // ---------------- Engine ----------------
 
+        // ---------------- First run: download the model ----------------
+
+        void DownloadModel()
+        {
+            string label = modelChoice.Label + ", about " + modelChoice.SizeGB.ToString("0.0", CultureInfo.InvariantCulture) + " GB";
+            try
+            {
+                Directory.CreateDirectory(modelsDir);
+                var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(modelsDir)));
+                if (drive.AvailableFreeSpace < (long)((modelChoice.SizeGB + 1) * 1024 * 1024 * 1024))
+                {
+                    SetStatus("Not enough disk space");
+                    AppendNote("The assistant needs about " + (modelChoice.SizeGB + 1).ToString("0", CultureInfo.InvariantCulture) +
+                               " GB of free disk space. Please free some up, then open the app again.");
+                    return;
+                }
+            }
+            catch { }
+
+            if (transcript.IsEmpty)
+                AppendNote("Welcome! Before the first chat, the assistant needs to be downloaded to this computer (" + label + "). " +
+                           "This only happens once. It can take a while on a slow connection, and if it's interrupted it carries on where it left off.");
+            SetStatus("Downloading the assistant...");
+            downloadBar.Value = 0;
+            downloadBar.Visible = true;
+            var t = new Thread(() =>
+            {
+                string error = null;
+                try { DownloadFile(modelChoice, modelPath); }
+                catch (Exception ex) { error = ex.Message; }
+                Ui(() =>
+                {
+                    downloadBar.Visible = false;
+                    if (error == null) { StartEngine(); return; }
+                    SetStatus("Download paused");
+                    var answer = MessageBox.Show(
+                        "The download stopped (" + error + ").\n\nCheck the internet connection, then click Retry. " +
+                        "It will carry on where it left off.", AppName, MessageBoxButtons.RetryCancel, MessageBoxIcon.Information);
+                    if (answer == DialogResult.Retry) DownloadModel();
+                    else AppendNote("The download is paused. Open the app again when you're connected to the internet and it will carry on.");
+                });
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        // Downloads with resume: the file is fetched into a .part file and renamed when complete.
+        void DownloadFile(ModelChoice m, string dest)
+        {
+            ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; // TLS 1.2
+            string part = dest + ".part";
+            string url = "https://huggingface.co/" + m.Repo + "/resolve/main/" + m.File;
+            for (int attempt = 0; ; attempt++)
+            {
+                long have = File.Exists(part) ? new FileInfo(part).Length : 0;
+                var req = (HttpWebRequest)WebRequest.Create(url);
+                req.UserAgent = "OfflineAssistant";
+                req.Timeout = 30000;
+                req.ReadWriteTimeout = 60000;
+                if (have > 0) req.AddRange(have);
+                HttpWebResponse resp;
+                try { resp = (HttpWebResponse)req.GetResponse(); }
+                catch (WebException ex)
+                {
+                    var r = ex.Response as HttpWebResponse;
+                    if (r != null && r.StatusCode == HttpStatusCode.NotFound && attempt == 0)
+                    {
+                        // The file was renamed upstream: look up the current name.
+                        string current = LookUpModelFile(m.Repo);
+                        if (current == null) throw new Exception("the assistant's file couldn't be found online");
+                        url = "https://huggingface.co/" + m.Repo + "/resolve/main/" + current;
+                        continue;
+                    }
+                    if (r != null && (int)r.StatusCode == 416) break; // already complete
+                    throw new Exception(ex.Status == WebExceptionStatus.ProtocolError ? "the server said no" : "no connection");
+                }
+                using (resp)
+                {
+                    bool resumed = resp.StatusCode == HttpStatusCode.PartialContent;
+                    if (!resumed) have = 0;
+                    long total = have + Math.Max(0, resp.ContentLength);
+                    using (var input = resp.GetResponseStream())
+                    using (var output = new FileStream(part, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write))
+                    {
+                        var buffer = new byte[1 << 20];
+                        var clock = Stopwatch.StartNew();
+                        long startHave = have;
+                        double lastShown = -1;
+                        int n;
+                        while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            output.Write(buffer, 0, n);
+                            have += n;
+                            if (clock.Elapsed.TotalSeconds - lastShown >= 0.5)
+                            {
+                                lastShown = clock.Elapsed.TotalSeconds;
+                                double gb = have / 1073741824.0, totalGb = total / 1073741824.0;
+                                double rate = (have - startHave) / Math.Max(1, clock.Elapsed.TotalSeconds);
+                                double left = rate > 0 ? (total - have) / rate : 0;
+                                string eta = left > 90 ? ", about " + (int)Math.Ceiling(left / 60) + " min left" : left > 0 ? ", about a minute left" : "";
+                                int pct = total > 0 ? (int)(have * 100 / total) : 0;
+                                string text = "Downloading the assistant: " + gb.ToString("0.0", CultureInfo.InvariantCulture) + " of " +
+                                              totalGb.ToString("0.0", CultureInfo.InvariantCulture) + " GB" + eta;
+                                Ui(() => { SetStatus(text); downloadBar.Value = Math.Max(0, Math.Min(100, pct)); });
+                            }
+                        }
+                    }
+                    if (total > 0 && have < total) throw new Exception("the connection dropped");
+                }
+                break;
+            }
+            if (File.Exists(dest)) File.Delete(dest);
+            File.Move(part, dest);
+        }
+
+        static string LookUpModelFile(string repo)
+        {
+            try
+            {
+                var req = (HttpWebRequest)WebRequest.Create("https://huggingface.co/api/models/" + repo);
+                req.UserAgent = "OfflineAssistant";
+                req.Timeout = 30000;
+                using (var resp = req.GetResponse())
+                using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                {
+                    var info = new JavaScriptSerializer().DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>;
+                    var siblings = info != null && info.ContainsKey("siblings") ? info["siblings"] as object[] : null;
+                    if (siblings == null) return null;
+                    foreach (var o in siblings)
+                    {
+                        var d = o as Dictionary<string, object>;
+                        string name = d != null && d.ContainsKey("rfilename") ? d["rfilename"] as string : null;
+                        if (name != null && name.EndsWith("Q4_K_M.gguf", StringComparison.OrdinalIgnoreCase) && !name.Contains("mmproj"))
+                            return name;
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
         void StartEngine()
         {
             coldStart = true;
             ready = false;
             sendButton.Enabled = false;
-            if (!File.Exists(enginePath) || !File.Exists(modelPath))
+            if (!File.Exists(enginePath))
             {
                 SetStatus("Not installed properly");
                 AppendNote("Some files are missing. Please run the installer again.");
                 return;
             }
+            if (!File.Exists(modelPath)) { DownloadModel(); return; }
             SetStatus("Getting ready... (this takes up to a minute)");
             if (transcript.IsEmpty) AppendNote("Getting ready. This can take up to a minute after the computer starts.");
 

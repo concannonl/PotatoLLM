@@ -150,7 +150,7 @@ $exe = Join-Path $Install 'OfflineAssistant.exe'
 $ErrorActionPreference = 'Continue'
 $buildOut = & $csc /nologo /target:winexe /optimize+ /platform:x64 "/out:$exe" `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll `
-    /r:System.Xml.dll /r:System.IO.Compression.dll $src 2>&1
+    /r:System.Xml.dll /r:System.IO.Compression.dll /r:System.Management.dll $src 2>&1
 $buildCode = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($buildCode -ne 0) {
