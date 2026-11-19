@@ -10,3 +10,5 @@ benchmark/context-logs/
 benchmark/quality-results-*
 benchmark/quality-report-*
 benchmark/quality-logs/
+benchmark/long-context-results-*
+benchmark/long-context-logs/

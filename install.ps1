@@ -150,7 +150,8 @@ $threadsBatch = [math]::Max($threads, $logical)
     "context=$($model.context)",
     "threads=$threads",
     "threads_batch=$threadsBatch",
-    "max_reply=768"
+    "max_reply=768",
+    "kv_cache=q8_0"
 ) | Set-Content -Path (Join-Path $Install 'config.ini') -Encoding UTF8
 Write-Host "  $threads threads for writing, $threadsBatch for reading"
 

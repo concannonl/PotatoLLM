@@ -293,6 +293,7 @@ namespace OfflineAssistant
         string partialReply = "";
         bool dirty;                // current chat has changes not yet saved
         int ctx, threads, threadsBatch, maxReply;
+        string kvCache;            // chat memory format: f16 (normal) or q8_0 (compact)
         volatile string baseUrl = "";
 
         bool ready, busy;
@@ -333,6 +334,7 @@ namespace OfflineAssistant
             threads = cfg.GetInt("threads", 2);
             threadsBatch = cfg.GetInt("threads_batch", Environment.ProcessorCount);
             maxReply = cfg.GetInt("max_reply", 768);
+            kvCache = cfg.Get("kv_cache", "f16");
             logPath = Path.Combine(appDir, "logs\\engine.log");
             chatsDir = Path.Combine(appDir, "chats");
 
@@ -591,8 +593,11 @@ namespace OfflineAssistant
             var t = new Thread(() =>
             {
                 string common = "-m \"" + modelPath + "\" -c " + ctx + " -t " + threads;
-                // Tuned settings first; if this engine version rejects any of them, fall back to basics.
-                bool ok = TryStart(common + " -tb " + threadsBatch + " -np 1 --no-webui", false)
+                string tuned = common + " -tb " + threadsBatch + " -np 1 --no-webui";
+                // Compact chat memory needs flash attention. Try the full tuned settings first;
+                // if this engine version rejects any of them, step back to safer ones.
+                bool ok = (kvCache != "f16" && TryStart(tuned + " -ctk " + kvCache + " -ctv " + kvCache + " -fa on", false))
+                       || TryStart(tuned, kvCache != "f16")
                        || TryStart(common, true);
                 Ui(() => { if (ok) OnReady(); else OnFailed(); });
             });
