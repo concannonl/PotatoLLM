@@ -79,6 +79,20 @@ These are the results of `benchmark/quality-test.ps1`: 10 everyday questions wit
 - **No 1B model can be trusted with arithmetic.** All three got the bill wrong, and two of the wrong answers look believable.
 - Each model has one serious failure. Gemma-3-1B has the lowest memory use, which matters a great deal on 4 GB with Windows, and gives the clearest explanations. Its sliding-window attention should also keep long chats fast.
 
+## Re-run with today's date in the system prompt
+
+The system prompt now adds "Today is …" and "if you don't know something, say so instead of guessing".
+
+**4 GB candidates**
+- **Gemma-3-1B** still made up a World Cup answer, this time that the 2030 tournament "was cancelled due to climate change impacts". It also garbled the summary. It invented an answer to an unanswerable question in both runs.
+- **LFM2.5-1.2B** answered the World Cup question honestly in both runs and got the summary fully right this time. The bill was close but wrong (210 × 24.5 = 5137.5p). It used no hidden thinking, peaked at about 1.3 GB and was the fastest.
+- **Llama-3.2-1B** was honest about the World Cup but wrongly claimed the hosts haven't been confirmed. It got the bill wrong again.
+
+**8 GB candidates**
+- **Gemma-3-4B** still got the bill, the bat and ball, and the World Cup right. However, the new line made it over-hedge: it added "I don't have the most up-to-date information on this" to the sky explanation. It also gave a stale population figure ("approximately 23 million").
+- **LFM2.5-2.6B** still thinks before every answer and was cut off mid-recipe. **Llama-3.2-3B** got the bill wrong again, this time £51.98.
+- **Memory:** the peak working set of the engine rose steadily during the run, from 4.2 GB to 4.6 GB for Gemma-3-4B and from 3.8 GB to 3.9 GB for Llama-3.2-3B. This needs checking in the real app, since 8 GB machines run Windows too.
+
 ## Lenovo X240, 4 GB
 
 Not tested yet.
