@@ -242,6 +242,73 @@ namespace OfflineAssistant
         }
     }
 
+    // Low-level helpers for smooth, flicker-free updates of the chat history box.
+    static class Native
+    {
+        const int WM_SETREDRAW = 0x000B;
+        const int WM_VSCROLL = 0x0115;
+        const int SB_BOTTOM = 7;
+        const int SB_VERT = 1;
+        const int SIF_ALL = 0x17;
+        const int EM_GETSCROLLPOS = 0x0400 + 221;
+        const int EM_SETSCROLLPOS = 0x0400 + 222;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct ScrollInfo
+        {
+            public uint cbSize, fMask;
+            public int nMin, nMax;
+            public uint nPage;
+            public int nPos, nTrackPos;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT { public int X, Y; }
+
+        [DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref POINT lParam);
+
+        [DllImport("user32.dll")]
+        static extern bool GetScrollInfo(IntPtr hWnd, int bar, ref ScrollInfo info);
+
+        public static void SetRedraw(Control c, bool on)
+        {
+            SendMessage(c.Handle, WM_SETREDRAW, (IntPtr)(on ? 1 : 0), IntPtr.Zero);
+            if (on) c.Invalidate();
+        }
+
+        // True when the view is at (or very near) the bottom, or there's nothing to scroll.
+        public static bool IsAtBottom(Control c)
+        {
+            var si = new ScrollInfo();
+            si.cbSize = (uint)Marshal.SizeOf(typeof(ScrollInfo));
+            si.fMask = SIF_ALL;
+            if (!GetScrollInfo(c.Handle, SB_VERT, ref si)) return true;
+            if (si.nPage == 0 || si.nMax - si.nMin + 1 <= si.nPage) return true;
+            return si.nPos + (int)si.nPage >= si.nMax - 40;
+        }
+
+        public static void ScrollToBottom(Control c)
+        {
+            SendMessage(c.Handle, WM_VSCROLL, (IntPtr)SB_BOTTOM, IntPtr.Zero);
+        }
+
+        public static POINT GetScrollPos(Control c)
+        {
+            var p = new POINT();
+            SendMessage(c.Handle, EM_GETSCROLLPOS, IntPtr.Zero, ref p);
+            return p;
+        }
+
+        public static void SetScrollPos(Control c, POINT p)
+        {
+            SendMessage(c.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref p);
+        }
+    }
+
     // One saved chat in the sidebar list.
     class ChatInfo
     {
@@ -291,6 +358,11 @@ namespace OfflineAssistant
         bool suppressSelect;
         int genId;                 // ignores replies that belong to a chat we've left
         string partialReply = "";
+        string shownReply = "";        // the cleaned reply text currently on screen
+        bool placeholderShown;         // the "..." shown before the first word arrives
+        bool renderPending;            // new words waiting to be drawn
+        bool unlockWrites;             // set if this Windows version won't write to a read-only box
+        System.Windows.Forms.Timer renderTimer;
         bool dirty;                // current chat has changes not yet saved
         int ctx, threads, threadsBatch, maxReply;
         string kvCache;            // chat memory format: f16 (normal) or q8_0 (compact)
@@ -371,6 +443,11 @@ namespace OfflineAssistant
             transcript.Font = bodyFont;
             transcript.DetectUrls = false;
             transcript.ScrollBars = RichTextBoxScrollBars.Vertical;
+
+            renderTimer = new System.Windows.Forms.Timer();
+            renderTimer.Interval = 60;
+            renderTimer.Tick += RenderTick;
+            renderTimer.Start();
             transcriptPanel.Controls.Add(transcript);
 
             // Top bar: status
@@ -526,16 +603,59 @@ namespace OfflineAssistant
             try { if (!IsDisposed && IsHandleCreated) BeginInvoke(a); } catch { }
         }
 
-        void Append(string text, Font font, Color color)
+        // Writes text over the current selection. Normally works on the read-only box directly
+        // (switching read-only off and on makes Windows repaint everything, which flickers).
+        void WriteSelected(string text)
         {
+            if (!unlockWrites)
+            {
+                int before = transcript.TextLength;
+                int selected = transcript.SelectionLength;
+                transcript.SelectedText = text;
+                bool blocked = text.Length > 0 && transcript.TextLength == before && text.Length != selected;
+                if (!blocked) return;
+                unlockWrites = true;
+            }
             transcript.ReadOnly = false;
-            transcript.SelectionStart = transcript.TextLength;
-            transcript.SelectionLength = 0;
-            transcript.SelectionFont = font;
-            transcript.SelectionColor = color;
             transcript.SelectedText = text;
             transcript.ReadOnly = true;
-            ScrollToEnd();
+        }
+
+        void InsertAtEnd(string text, Font font, Color color)
+        {
+            transcript.Select(transcript.TextLength, 0);
+            transcript.SelectionFont = font;
+            transcript.SelectionColor = color;
+            WriteSelected(text);
+        }
+
+        // Runs a change to the chat history while keeping the view steady: follows the bottom
+        // if the user is there, otherwise leaves them where they are, and keeps their selection.
+        // Repaints are paused only for big rewrites or when the user has scrolled up.
+        void UpdateTranscript(Action change, bool bigRewrite)
+        {
+            bool follow = Native.IsAtBottom(transcript);
+            int selStart = transcript.SelectionStart, selLength = transcript.SelectionLength;
+            Native.POINT pos = Native.GetScrollPos(transcript);
+            bool pause = bigRewrite || !follow;
+            if (pause) Native.SetRedraw(transcript, false);
+            try { change(); }
+            finally
+            {
+                if (selLength > 0) transcript.Select(selStart, selLength);
+                if (follow)
+                {
+                    if (selLength == 0) transcript.ScrollToCaret();
+                    Native.ScrollToBottom(transcript);
+                }
+                else Native.SetScrollPos(transcript, pos);
+                if (pause) Native.SetRedraw(transcript, true);
+            }
+        }
+
+        void Append(string text, Font font, Color color)
+        {
+            UpdateTranscript(() => InsertAtEnd(text, font, color), false);
         }
 
         void AppendNote(string text)
@@ -543,24 +663,44 @@ namespace OfflineAssistant
             Append(text + "\n\n", noteFont, noteColor);
         }
 
-        void ScrollToEnd()
+        void ShowAssistantPlaceholder()
         {
-            transcript.SelectionStart = transcript.TextLength;
-            transcript.SelectionLength = 0;
-            transcript.ScrollToCaret();
+            assistantStart = transcript.TextLength;
+            Append("...", bodyFont, noteColor);
+            shownReply = "";
+            placeholderShown = true;
         }
 
+        // Shows the reply so far. Usually only the new words are added at the end;
+        // the whole reply is rewritten only when earlier text changed (e.g. markdown cleaned up).
         void ReplaceAssistantText(string text)
         {
             if (assistantStart < 0) return;
-            transcript.ReadOnly = false;
-            transcript.SelectionStart = assistantStart;
-            transcript.SelectionLength = transcript.TextLength - assistantStart;
-            transcript.SelectionFont = bodyFont;
-            transcript.SelectionColor = textColor;
-            transcript.SelectedText = text;
-            transcript.ReadOnly = true;
-            ScrollToEnd();
+            if (!placeholderShown && text.StartsWith(shownReply, StringComparison.Ordinal))
+            {
+                string added = text.Substring(shownReply.Length);
+                if (added.Length > 0) Append(added, bodyFont, textColor);
+            }
+            else
+            {
+                UpdateTranscript(() =>
+                {
+                    transcript.Select(assistantStart, Math.Max(0, transcript.TextLength - assistantStart));
+                    transcript.SelectionFont = bodyFont;
+                    transcript.SelectionColor = textColor;
+                    WriteSelected(text);
+                }, true);
+                placeholderShown = false;
+            }
+            shownReply = text;
+        }
+
+        // Draws waiting words at most ~16 times a second, so bursts of tokens don't cause jitter.
+        void RenderTick(object sender, EventArgs e)
+        {
+            if (!renderPending || !busy) return;
+            renderPending = false;
+            ReplaceAssistantText(Clean(partialReply));
         }
 
         // Small models often write markdown anyway; show it as clean text.
@@ -707,6 +847,7 @@ namespace OfflineAssistant
             genId++;
             busy = false;
             dirty = true;
+            renderPending = false;
             sendButton.Text = "Send";
             assistantStart = -1;
             if (partialReply.Trim().Length > 0)
@@ -884,6 +1025,7 @@ namespace OfflineAssistant
             dirty = false;
 
             transcript.Clear();
+            Native.SetRedraw(transcript, false); // draw the whole chat in one go
             foreach (var m in history)
             {
                 bool isUser = (string)m["role"] == "user";
@@ -891,6 +1033,9 @@ namespace OfflineAssistant
                 string text = (string)m["content"];
                 Append((isUser ? text.Replace("\r\n", "\n") : Clean(text)) + "\n\n", bodyFont, textColor);
             }
+            transcript.Select(transcript.TextLength, 0);
+            transcript.ScrollToCaret();
+            Native.SetRedraw(transcript, true);
             // A question left unanswered (e.g. the app was closed mid-reply) stays visible,
             // but isn't sent again, so the next message starts cleanly.
             if (history.Count > 0 && (string)history[history.Count - 1]["role"] == "user")
@@ -976,8 +1121,8 @@ namespace OfflineAssistant
             Append("You\n", headFont, userColor);
             Append(text.Replace("\r\n", "\n") + "\n\n", bodyFont, textColor);
             Append("Assistant\n", headFont, botColor);
-            assistantStart = transcript.TextLength;
-            Append("...", bodyFont, noteColor);
+            ShowAssistantPlaceholder();
+            renderPending = false;
 
             busy = true;
             writing = false;
@@ -1169,8 +1314,8 @@ namespace OfflineAssistant
             if (!busy || myId != genId) return;
             UpdateMemory(liveBase + tokensSoFar);
             partialReply = text;
+            renderPending = true;
             if (!writing) { writing = true; SetStatus("Writing..."); }
-            ReplaceAssistantText(Clean(text));
         }
 
         void FinishReply(int myId, string final, string error, int realTotal, int tokensCounted)
@@ -1180,6 +1325,7 @@ namespace OfflineAssistant
             bool wasStopped = stopRequested;
             dirty = true;
             busy = false;
+            renderPending = false;
             currentRequest = null;
             sendButton.Text = "Send";
 
