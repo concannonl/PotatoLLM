@@ -274,10 +274,17 @@ namespace OfflineAssistant
         [DllImport("user32.dll")]
         static extern bool GetScrollInfo(IntPtr hWnd, int bar, ref ScrollInfo info);
 
+        [DllImport("user32.dll")]
+        static extern bool RedrawWindow(IntPtr hWnd, IntPtr rect, IntPtr region, uint flags);
+
+        const uint RDW_INVALIDATE = 0x0001, RDW_NOERASE = 0x0020, RDW_UPDATENOW = 0x0100, RDW_FRAME = 0x0400;
+
+        // Turning redraw back on paints the finished result once, without first blanking the
+        // background (blanking is what makes text flash).
         public static void SetRedraw(Control c, bool on)
         {
             SendMessage(c.Handle, WM_SETREDRAW, (IntPtr)(on ? 1 : 0), IntPtr.Zero);
-            if (on) c.Invalidate();
+            if (on) RedrawWindow(c.Handle, IntPtr.Zero, IntPtr.Zero, RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW | RDW_FRAME);
         }
 
         // True when the view is at (or very near) the bottom, or there's nothing to scroll.
@@ -289,11 +296,6 @@ namespace OfflineAssistant
             if (!GetScrollInfo(c.Handle, SB_VERT, ref si)) return true;
             if (si.nPage == 0 || si.nMax - si.nMin + 1 <= si.nPage) return true;
             return si.nPos + (int)si.nPage >= si.nMax - 40;
-        }
-
-        public static void ScrollToBottom(Control c)
-        {
-            SendMessage(c.Handle, WM_VSCROLL, (IntPtr)SB_BOTTOM, IntPtr.Zero);
         }
 
         public static POINT GetScrollPos(Control c)
@@ -445,7 +447,7 @@ namespace OfflineAssistant
             transcript.ScrollBars = RichTextBoxScrollBars.Vertical;
 
             renderTimer = new System.Windows.Forms.Timer();
-            renderTimer.Interval = 60;
+            renderTimer.Interval = 100;
             renderTimer.Tick += RenderTick;
             renderTimer.Start();
             transcriptPanel.Controls.Add(transcript);
@@ -629,29 +631,35 @@ namespace OfflineAssistant
             WriteSelected(text);
         }
 
-        // Runs a change to the chat history while keeping the view steady: follows the bottom
-        // if the user is there, otherwise leaves them where they are, and keeps their selection.
-        // Repaints are paused only for big rewrites or when the user has scrolled up.
+        // Runs a change to the chat history as one atomic step: drawing is frozen, the text is
+        // changed, the view is positioned with a single scroll, and the result is painted once,
+        // so no half-finished state ever reaches the screen. Follows the bottom if the user is
+        // there; otherwise leaves them where they are. Keeps their selection.
         void UpdateTranscript(Action change, bool bigRewrite)
         {
             bool follow = Native.IsAtBottom(transcript);
             int selStart = transcript.SelectionStart, selLength = transcript.SelectionLength;
             Native.POINT pos = Native.GetScrollPos(transcript);
-            bool pause = bigRewrite || !follow;
-            if (pause) Native.SetRedraw(transcript, false);
+            Freeze();
             try { change(); }
             finally
             {
-                if (selLength > 0) transcript.Select(selStart, selLength);
                 if (follow)
                 {
-                    if (selLength == 0) transcript.ScrollToCaret();
-                    Native.ScrollToBottom(transcript);
+                    transcript.Select(transcript.TextLength, 0);
+                    transcript.ScrollToCaret();
+                    pos = Native.GetScrollPos(transcript);
                 }
-                else Native.SetScrollPos(transcript, pos);
-                if (pause) Native.SetRedraw(transcript, true);
+                if (selLength > 0) transcript.Select(selStart, selLength);
+                Native.SetScrollPos(transcript, pos); // undo any scroll caused by restoring the selection
+                Unfreeze();
             }
         }
+
+        // Freezes drawing of the chat history; nested calls are fine, it repaints on the last Unfreeze.
+        int freezeDepth;
+        void Freeze() { if (freezeDepth++ == 0) Native.SetRedraw(transcript, false); }
+        void Unfreeze() { if (freezeDepth > 0 && --freezeDepth == 0) Native.SetRedraw(transcript, true); }
 
         void Append(string text, Font font, Color color)
         {
@@ -695,7 +703,7 @@ namespace OfflineAssistant
             shownReply = text;
         }
 
-        // Draws waiting words at most ~16 times a second, so bursts of tokens don't cause jitter.
+        // Draws waiting words at most 10 times a second, so bursts of tokens don't cause jitter.
         void RenderTick(object sender, EventArgs e)
         {
             if (!renderPending || !busy) return;
@@ -1024,8 +1032,8 @@ namespace OfflineAssistant
             coldStart = true;
             dirty = false;
 
+            Freeze(); // draw the whole chat in one go
             transcript.Clear();
-            Native.SetRedraw(transcript, false); // draw the whole chat in one go
             foreach (var m in history)
             {
                 bool isUser = (string)m["role"] == "user";
@@ -1035,7 +1043,7 @@ namespace OfflineAssistant
             }
             transcript.Select(transcript.TextLength, 0);
             transcript.ScrollToCaret();
-            Native.SetRedraw(transcript, true);
+            Unfreeze();
             // A question left unanswered (e.g. the app was closed mid-reply) stays visible,
             // but isn't sent again, so the next message starts cleanly.
             if (history.Count > 0 && (string)history[history.Count - 1]["role"] == "user")
