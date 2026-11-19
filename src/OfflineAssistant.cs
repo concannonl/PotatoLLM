@@ -749,6 +749,24 @@ namespace OfflineAssistant
         string attachedName, attachedText;   // a document waiting to be sent with the next message
         int attachedWords;
         string pdftotextPath;
+
+        // Saved chat memory: the engine's working memory for a chat, written to disk when you leave
+        // the chat and loaded back when you return, so nothing has to be re-read.
+        string memoryDir;
+        bool slotSaving;                     // this engine version can save and load chat memory
+        bool memoryChanged;                  // the current chat has new replies since its memory was saved
+        volatile bool memoryBusy;            // saving or loading memory; sending waits for it
+        string chatSystemPrompt;             // the instructions this chat started with (kept so saved memory still matches)
+        int openedSavedStart;                // where the reopened chat's saved memory starts
+        readonly object memLock = new object();
+        readonly Queue<Action> memJobs = new Queue<Action>();
+        Thread memWorker;
+
+        // Reading progress
+        volatile int readPercent = -1;       // reported by the engine, if it does
+        DateTime readStarted;
+        int readTokensExpected;
+        string readLabel = "";
         double readTps;                      // how fast this computer reads text (tokens/s), measured as it goes
         MemoryBar memoryBar;
         Label memoryLabel;
@@ -819,11 +837,20 @@ namespace OfflineAssistant
             kvCache = cfg.Get("kv_cache", "f16");
             logPath = Path.Combine(appDir, "logs\\engine.log");
             chatsDir = Path.Combine(appDir, "chats");
+            memoryDir = Path.Combine(appDir, "memory");
+            try { Directory.CreateDirectory(memoryDir); } catch { }
 
             BuildUi();
             LoadChatList();
             Shown += (s, e) => StartEngine();
-            FormClosing += (s, e) => { AbandonReply(); SaveCurrentChat(); engine.Stop(); };
+            FormClosing += (s, e) =>
+            {
+                AbandonReply();
+                SaveCurrentChat();
+                Hide();                      // close at once; finish saving the chat's memory out of sight
+                SaveChatMemory(true);
+                engine.Stop();
+            };
         }
 
         // ---------------- UI ----------------
@@ -1084,6 +1111,16 @@ namespace OfflineAssistant
         // Draws waiting words at most 10 times a second, so bursts of tokens don't cause jitter.
         void RenderTick(object sender, EventArgs e)
         {
+            if (busy && !writing && readTokensExpected >= 150)
+            {
+                int pct = readPercent;
+                if (pct < 0) // estimate from this computer's measured reading speed
+                {
+                    double secs = (DateTime.Now - readStarted).TotalSeconds;
+                    pct = (int)Math.Min(95, secs * Math.Max(1.0, readTps) * 100 / readTokensExpected);
+                }
+                SetStatus(readLabel + " " + pct + "%");
+            }
             if (!renderPending || !busy) return;
             renderPending = false;
             ReplaceAssistantText(Clean(partialReply));
@@ -1123,9 +1160,18 @@ namespace OfflineAssistant
                 string tuned = common + " -tb " + threadsBatch + " -np 1 --no-webui";
                 // Compact chat memory needs flash attention. Try the full tuned settings first;
                 // if this engine version rejects any of them, step back to safer ones.
-                bool ok = (kvCache != "f16" && TryStart(tuned + " -ctk " + kvCache + " -ctv " + kvCache + " -fa on", false))
-                       || TryStart(tuned, kvCache != "f16")
-                       || TryStart(common, true);
+                // Trailing forward slash: a backslash before the closing quote would break the argument.
+                string slotArg = " --slot-save-path \"" + memoryDir + "/\"";
+                string kvArgs = " -ctk " + kvCache + " -ctv " + kvCache + " -fa on";
+                // Try the full tuned settings first; if this engine version rejects any of them,
+                // step back to safer ones. Saving chat memory only works in the first two.
+                int tier = 0;
+                if (kvCache != "f16" && TryStart(tuned + kvArgs + slotArg, false)) tier = 1;
+                else if (TryStart(tuned + slotArg, kvCache != "f16")) tier = 2;
+                else if (TryStart(tuned, true)) tier = 3;
+                else if (TryStart(common, true)) tier = 4;
+                bool ok = tier > 0;
+                slotSaving = tier == 1 || tier == 2;
                 Ui(() => { if (ok) OnReady(); else OnFailed(); });
             });
             t.IsBackground = true;
@@ -1180,7 +1226,11 @@ namespace OfflineAssistant
                 transcript.Clear();
                 AppendNote("Ready. Ask me anything. Everything stays on this computer and nothing is sent to the internet.\n" +
                            "I can make mistakes, especially with sums and facts, so please double-check anything important.");
+                // Read the built-in instructions now, while the user is typing, so the first reply starts sooner.
+                PreRead(new List<object> { Msg("system", SystemPrompt), Msg("user", "Hello") }, false);
             }
+            else if (currentChatId != null && coldStart) LoadChatMemory(currentChatId, openedSavedStart); // opened while starting up
+            else PreReadCurrentChat();
             input.Focus();
         }
 
@@ -1211,7 +1261,10 @@ namespace OfflineAssistant
         {
             AbandonReply();
             SaveCurrentChat();
+            SaveChatMemory(false);
             currentChatId = null;
+            chatSystemPrompt = null;
+            memoryChanged = false;
             history.Clear();
             historyStart = 0;
             transcript.Clear();
@@ -1292,6 +1345,8 @@ namespace OfflineAssistant
                 doc["title"] = info.Title;
                 doc["updated"] = info.Updated.ToString("o", CultureInfo.InvariantCulture);
                 doc["messages"] = history;
+                doc["history_start"] = historyStart;
+                if (chatSystemPrompt != null) doc["system"] = chatSystemPrompt;
                 var json = new JavaScriptSerializer();
                 json.MaxJsonLength = int.MaxValue;
 
@@ -1381,14 +1436,19 @@ namespace OfflineAssistant
         {
             AbandonReply();
             SaveCurrentChat();
+            SaveChatMemory(false);
 
             var loaded = new List<Dictionary<string, object>>();
+            string savedSystem = null;
+            int savedStart = 0;
             try
             {
                 var json = new JavaScriptSerializer();
                 json.MaxJsonLength = int.MaxValue;
                 var doc = json.DeserializeObject(File.ReadAllText(info.FilePath, Encoding.UTF8)) as Dictionary<string, object>;
                 var msgs = doc != null && doc.ContainsKey("messages") ? doc["messages"] as object[] : null;
+                if (doc != null && doc.ContainsKey("system")) savedSystem = doc["system"] as string;
+                if (doc != null && doc.ContainsKey("history_start")) savedStart = ToInt(doc["history_start"]);
                 if (msgs != null)
                     foreach (var m in msgs)
                     {
@@ -1413,6 +1473,9 @@ namespace OfflineAssistant
             historyStart = 0;
             coldStart = true;
             dirty = false;
+            chatSystemPrompt = savedSystem;
+            memoryChanged = false;
+            openedSavedStart = Math.Max(0, Math.Min(savedStart, Math.Max(0, loaded.Count - 1)));
 
             transcript.BeginUpdate(); // lay out the whole chat in one go
             transcript.Clear();
@@ -1433,6 +1496,155 @@ namespace OfflineAssistant
             SelectInList(currentChatId);
             if (ready) SetStatus("Ready");
             input.Focus();
+            if (ready) LoadChatMemory(info.Id, openedSavedStart);
+        }
+
+        // ---------------- Saved chat memory and pre-reading ----------------
+
+        // Memory jobs run one at a time, in order, on a background thread.
+        void EnqueueMemoryJob(Action job)
+        {
+            lock (memLock) { memJobs.Enqueue(job); Monitor.Pulse(memLock); }
+            if (memWorker == null)
+            {
+                memWorker = new Thread(() =>
+                {
+                    while (true)
+                    {
+                        Action next;
+                        lock (memLock)
+                        {
+                            while (memJobs.Count == 0) Monitor.Wait(memLock);
+                            next = memJobs.Dequeue();
+                        }
+                        try { next(); } catch { }
+                    }
+                });
+                memWorker.IsBackground = true;
+                memWorker.Start();
+            }
+        }
+
+        Dictionary<string, object> PostJson(string path, string json, int timeoutMs)
+        {
+            try
+            {
+                var req = (HttpWebRequest)WebRequest.Create(baseUrl + path);
+                req.Method = "POST";
+                req.ContentType = "application/json";
+                req.Proxy = null;
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
+                byte[] data = Encoding.UTF8.GetBytes(json);
+                req.ContentLength = data.Length;
+                using (var s = req.GetRequestStream()) s.Write(data, 0, data.Length);
+                using (var resp = req.GetResponse())
+                using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                {
+                    var ser = new JavaScriptSerializer();
+                    ser.MaxJsonLength = int.MaxValue;
+                    return ser.DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>;
+                }
+            }
+            catch { return null; }
+        }
+
+        string MemoryFile(string chatId) { return chatId + ".bin"; }
+
+        // Writes the engine's memory of the current chat to disk (when leaving the chat or closing).
+        void SaveChatMemory(bool waitForIt)
+        {
+            if (!slotSaving || !ready || currentChatId == null || !memoryChanged) return;
+            memoryChanged = false;
+            string file = MemoryFile(currentChatId);
+            Action job = () =>
+            {
+                var r = PostJson("/slots/0?action=save", "{\"filename\":\"" + file + "\"}", 60000);
+                if (r == null || !r.ContainsKey("n_saved")) { slotSaving = false; return; } // not supported: stop trying
+                PruneMemoryFiles();
+            };
+            if (waitForIt) job(); else EnqueueMemoryJob(job);
+        }
+
+        // Loads a reopened chat's saved memory, so nothing needs re-reading. If there is none,
+        // pre-reads the recent part of the chat in the background instead.
+        void LoadChatMemory(string chatId, int savedStart)
+        {
+            string path = Path.Combine(memoryDir, MemoryFile(chatId));
+            if (!slotSaving || !File.Exists(path))
+            {
+                PreReadCurrentChat();
+                return;
+            }
+            memoryBusy = true;
+            SetStatus("Loading this chat's memory...");
+            string file = MemoryFile(chatId);
+            EnqueueMemoryJob(() =>
+            {
+                var r = PostJson("/slots/0?action=restore", "{\"filename\":\"" + file + "\"}", 120000);
+                bool ok = r != null && r.ContainsKey("n_restored") && ToInt(r["n_restored"]) > 0;
+                try { File.SetLastWriteTime(path, DateTime.Now); } catch { }
+                Ui(() =>
+                {
+                    memoryBusy = false;
+                    if (currentChatId != chatId) return; // the user has moved on
+                    if (ok)
+                    {
+                        coldStart = false;
+                        historyStart = savedStart;
+                        UpdateMemory(EstimateTokens(BuildMessages()));
+                        if (!busy) SetStatus("Ready");
+                    }
+                    else
+                    {
+                        if (!busy) SetStatus("Ready");
+                        PreReadCurrentChat();
+                    }
+                });
+            });
+        }
+
+        // Reads the recent part of the current chat in the background while the user is typing.
+        void PreReadCurrentChat()
+        {
+            if (!ready || history.Count == 0 || !coldStart) return;
+            var messages = BuildMessages();
+            coldStart = false;
+            PreRead(messages, true);
+        }
+
+        void PreRead(List<object> messages, bool countsAsChatMemory)
+        {
+            var body = new Dictionary<string, object>();
+            body["messages"] = messages;
+            body["max_tokens"] = 1;
+            body["cache_prompt"] = true;
+            string json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(body);
+            string chatId = currentChatId;
+            EnqueueMemoryJob(() =>
+            {
+                var r = PostJson("/v1/chat/completions", json, 30 * 60 * 1000);
+                if (r != null && countsAsChatMemory) Ui(() => { if (currentChatId == chatId) memoryChanged = true; });
+            });
+        }
+
+        // Keeps saved memory from filling the disk: the 10 most recently used chats, 3 GB at most.
+        void PruneMemoryFiles()
+        {
+            try
+            {
+                var files = new List<FileInfo>(new DirectoryInfo(memoryDir).GetFiles("*.bin"));
+                files.Sort((a, b) => b.LastWriteTime.CompareTo(a.LastWriteTime));
+                long total = 0;
+                for (int i = 0; i < files.Count; i++)
+                {
+                    total += files[i].Length;
+                    bool chatGone = !File.Exists(Path.Combine(chatsDir, Path.GetFileNameWithoutExtension(files[i].Name) + ".json"));
+                    if (i >= 10 || total > 3L * 1024 * 1024 * 1024 || chatGone)
+                        try { files[i].Delete(); } catch { }
+                }
+            }
+            catch { }
         }
 
         void DeleteChat(int index)
@@ -1450,6 +1662,7 @@ namespace OfflineAssistant
                 currentChatId = null;
             }
             try { File.Delete(info.FilePath); } catch { }
+            try { File.Delete(Path.Combine(memoryDir, MemoryFile(info.Id))); } catch { }
             chats.Remove(info);
             RefreshList();
             if (currentChatId == null) NewChat();
@@ -1629,6 +1842,8 @@ namespace OfflineAssistant
         {
             if (busy) { StopGenerating(); return; }
             if (!ready) return;
+            if (memoryBusy) { SetStatus("One moment, loading this chat's memory..."); return; }
+            if (chatSystemPrompt == null) chatSystemPrompt = SystemPrompt;
 
             string text = input.Text.Trim();
             bool hasDoc = attachedText != null;
@@ -1698,9 +1913,14 @@ namespace OfflineAssistant
                     " in its memory. Add it again if you have more questions about it.\n\n", noteFont, noteColor);
                 assistantStart++;
             }
-            SetStatus(hasDoc ? "Reading the document... (" + ReadingTime(((string)userMsg["content"]).Length) + ")"
-                    : catchingUp ? "Catching up on the conversation... (this can take a minute or two)" : "Reading your message...");
+            readLabel = hasDoc ? "Reading the document..." : catchingUp ? "Catching up on the conversation..." : "Reading your message...";
+            SetStatus(readLabel);
+            int usedBefore = usedTokens;
             liveBase = EstimateTokens(messages);
+            // How much new text the engine has to read (the rest is already in its memory).
+            readTokensExpected = (wasCold || lastBuildTrimmed) ? liveBase : Math.Max(0, liveBase - usedBefore);
+            readStarted = DateTime.Now;
+            readPercent = -1;
             UpdateMemory(liveBase);
             var t = new Thread(() => Generate(messages, myId));
             t.IsBackground = true;
@@ -1729,7 +1949,7 @@ namespace OfflineAssistant
             }
 
             var list = new List<object>();
-            list.Add(Msg("system", SystemPrompt));
+            list.Add(Msg("system", chatSystemPrompt ?? SystemPrompt));
             for (int i = historyStart; i < history.Count; i++)
                 list.Add(Msg((string)history[i]["role"], (string)history[i]["content"]));
             return list;
@@ -1751,6 +1971,7 @@ namespace OfflineAssistant
                 body["temperature"] = 0.7;
                 body["max_tokens"] = maxReply;
                 body["cache_prompt"] = true;
+                body["return_progress"] = true; // newer engines report reading progress while streaming
                 var streamOptions = new Dictionary<string, object>();
                 streamOptions["include_usage"] = true;
                 body["stream_options"] = streamOptions;
@@ -1777,6 +1998,8 @@ namespace OfflineAssistant
                         if (payload == "[DONE]") break;
                         object parsed = json.DeserializeObject(payload);
                         int reported = ReadTokenTotal(parsed);
+                        int progress = ReadProgress(parsed);
+                        if (progress >= 0) readPercent = progress;
                         double speed = ReadPromptSpeed(parsed);
                         if (speed > 0) readTps = speed;
                         if (reported > 0) realTotal = reported;
@@ -1815,6 +2038,18 @@ namespace OfflineAssistant
         {
             try { return o == null ? 0 : Convert.ToInt32(o, CultureInfo.InvariantCulture); }
             catch { return 0; }
+        }
+
+        // Reading progress the engine reports while it reads the prompt, as a percentage (or -1).
+        static int ReadProgress(object parsed)
+        {
+            var obj = parsed as Dictionary<string, object>;
+            var p = obj != null && obj.ContainsKey("prompt_progress") ? obj["prompt_progress"] as Dictionary<string, object> : null;
+            if (p == null || !p.ContainsKey("total") || !p.ContainsKey("processed")) return -1;
+            int cache = p.ContainsKey("cache") ? ToInt(p["cache"]) : 0;
+            int todo = ToInt(p["total"]) - cache;
+            if (todo <= 0) return 100;
+            return Math.Max(0, Math.Min(100, (ToInt(p["processed"]) - cache) * 100 / todo));
         }
 
         // How fast the engine read the new part of the prompt (tokens/s), if it said and the sample is big enough.
@@ -1910,6 +2145,7 @@ namespace OfflineAssistant
             {
                 ReplaceAssistantText(Clean(final));
                 history.Add(Msg("assistant", final));
+                memoryChanged = true;
             }
             else
             {
