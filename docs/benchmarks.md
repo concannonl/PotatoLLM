@@ -46,6 +46,22 @@ The tests used `benchmark/context-benchmark.ps1` with build 12521. They measure 
 - **8-bit KV gives no consistent speed gain on this CPU.** Prompt reading is 5–25% slower with it. Its value here is RAM only.
 - **LFM2.5-1.2B beats Llama-3.2-1B** in every test except prompt reading, where it is equal.
 
+## Answer quality: 8 GB candidates (X250)
+
+These are the results of `benchmark/quality-test.ps1`: 10 everyday questions with the app's system prompt and temperature 0.7, a 512-token reply cap and seed 42.
+
+| | Llama-3.2-3B | LFM2.5-2.6B | Gemma-3-4B |
+|---|---|---|---|
+| Average time per answer | 19.7 s | 53.1 s | 21.9 s |
+| Electricity bill (£67.35) | ✗ £67.53 (210 × 24.5 miscalculated) | ✓ | ✓ |
+| Bat and ball (5p) | ✓ | ✓ | ✓ |
+| Canberra / ~27m | ✓ (25–26m) | ✓ | ✓ |
+| 2030 World Cup | ✓ honest | ✗ honest, but invents "held in Italy" | ✓ honest |
+| Other problems | Pension explanation muddled; sky answer too technical for a child | Empty answer to the recipe question; uses markdown; sky answer blames "dust and water droplets" | Recipe uses markdown bullets; "bi-weekly" is ambiguous |
+
+- **LFM2.5-2.6B thinks before answering.** Its timings imply roughly 150–500 hidden reasoning tokens per answer. On the recipe question it hit the 512-token cap while still thinking and returned nothing. Its high raw speed doesn't carry through to the user.
+- **Gemma-3-4B gave correct, concise and well-pitched answers** at almost the same time per answer as Llama, and it holds up far better in long chats.
+
 ## Lenovo X240, 4 GB
 
 Not tested yet.
