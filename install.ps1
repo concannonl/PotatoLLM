@@ -36,8 +36,9 @@ if ($ramGB -ge 7) {
     $model = @{ label='standard (Gemma 3 4B)'; gb=2.5; context=16384
                 repo='bartowski/google_gemma-3-4b-it-GGUF'; file='google_gemma-3-4b-it-Q4_K_M.gguf'; pattern='gemma-3-4b.*Q4_K_M' }
 } else {
-    $model = @{ label='compact (Llama 3.2 1B)'; gb=0.8; context=4096
-                repo='bartowski/Llama-3.2-1B-Instruct-GGUF'; file='Llama-3.2-1B-Instruct-Q4_K_M.gguf'; pattern='Llama-3\.2-1B.*Q4_K_M' }
+    # Gemma 3 1B: lowest memory use of the 1B models tested (~1 GB), clearest answers.
+    $model = @{ label='compact (Gemma 3 1B)'; gb=0.8; context=8192
+                repo='bartowski/google_gemma-3-1b-it-GGUF'; file='google_gemma-3-1b-it-Q4_K_M.gguf'; pattern='gemma-3-1b.*Q4_K_M' }
 }
 Write-Host "  Chosen assistant size: $($model.label)"
 

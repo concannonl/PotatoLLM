@@ -19,7 +19,10 @@ New-Item -ItemType Directory -Force -Path $BinDir, $ModDir | Out-Null
 function Say($msg) { Write-Host ""; Write-Host "==> $msg" -ForegroundColor Cyan }
 
 # Same as the app.
+$Today = (Get-Date).ToString('dddd d MMMM yyyy', [Globalization.CultureInfo]::GetCultureInfo('en-GB'))
 $SystemPrompt = "You are a helpful assistant running privately on the user's own computer, with no internet access. " +
+                "Today is $Today. Your knowledge comes from your training and may be out of date; " +
+                "if you don't know something, say so instead of guessing. " +
                 "Answer clearly and concisely in plain text. Do not use markdown, tables or headings."
 
 $Paragraph = "The council has announced that from 1 March, household waste collections will move from weekly to fortnightly " +

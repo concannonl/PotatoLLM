@@ -255,9 +255,19 @@ namespace OfflineAssistant
     public class ChatForm : Form
     {
         const string AppName = "Offline Assistant";
-        const string SystemPrompt =
-            "You are a helpful assistant running privately on the user's own computer, with no internet access. " +
-            "Answer clearly and concisely in plain text. Do not use markdown, tables or headings.";
+        // Keep this identical to benchmark/quality-test.ps1 so test results match the app.
+        // Today's date lets the model tell past from future (small models otherwise invent results).
+        static string SystemPrompt
+        {
+            get
+            {
+                string today = DateTime.Now.ToString("dddd d MMMM yyyy", CultureInfo.GetCultureInfo("en-GB"));
+                return "You are a helpful assistant running privately on the user's own computer, with no internet access. " +
+                       "Today is " + today + ". Your knowledge comes from your training and may be out of date; " +
+                       "if you don't know something, say so instead of guessing. " +
+                       "Answer clearly and concisely in plain text. Do not use markdown, tables or headings.";
+            }
+        }
 
         RichTextBox transcript;
         TextBox input;
@@ -636,7 +646,8 @@ namespace OfflineAssistant
             if (history.Count == 0)
             {
                 transcript.Clear();
-                AppendNote("Ready. Ask me anything. Everything stays on this computer and nothing is sent to the internet.");
+                AppendNote("Ready. Ask me anything. Everything stays on this computer and nothing is sent to the internet.\n" +
+                           "I can make mistakes, especially with sums, so please double-check anything important.");
             }
             input.Focus();
         }
