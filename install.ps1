@@ -33,11 +33,11 @@ Write-Host "  $($cpu.Name.Trim()), $cores cores, $ramGB GB memory"
 # Choose the model from memory size. See docs/benchmarks.md for why:
 # Gemma 3 4B gave the best answers and barely slows down as long chats fill its memory.
 if ($ramGB -ge 7) {
-    $model = @{ label='standard (Gemma 3 4B)'; gb=2.5; context=16384
+    $model = @{ label='standard (Gemma 3 4B)'; gb=2.5; context=32768
                 repo='bartowski/google_gemma-3-4b-it-GGUF'; file='google_gemma-3-4b-it-Q4_K_M.gguf'; pattern='gemma-3-4b.*Q4_K_M' }
 } else {
     # Gemma 3 1B: lowest memory use of the 1B models tested (~1 GB), clearest answers.
-    $model = @{ label='compact (Gemma 3 1B)'; gb=0.8; context=8192
+    $model = @{ label='compact (Gemma 3 1B)'; gb=0.8; context=16384
                 repo='bartowski/google_gemma-3-1b-it-GGUF'; file='google_gemma-3-1b-it-Q4_K_M.gguf'; pattern='gemma-3-1b.*Q4_K_M' }
 }
 Write-Host "  Chosen assistant size: $($model.label)"

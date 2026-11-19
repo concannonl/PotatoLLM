@@ -95,6 +95,25 @@ The system prompt now adds "Today is …" and "if you don't know something, say 
 - **LFM2.5-2.6B** still thinks before every answer and was cut off mid-recipe. **Llama-3.2-3B** got the bill wrong again, this time £51.98.
 - **Memory:** the peak working set of the engine rose steadily during the run, from 4.2 GB to 4.6 GB for Gemma-3-4B and from 3.8 GB to 3.9 GB for Llama-3.2-3B. This needs checking in the real app, since 8 GB machines run Windows too.
 
+## Long chats with Gemma: 16k and 32k (X250)
+
+The tests used `benchmark/long-context-benchmark.ps1`, llama.cpp build `08c252e22` and `llama-bench -p 0 -n 32 -r 1`. Peak memory is the peak working set of the benchmark process.
+
+| Model | Memory | Tokens in memory | Reply (tok/s) | Peak RAM |
+|---|---|---|---|---|
+| Gemma-3-1B | 16-bit | 0 | 13.07 | 901 MB |
+| Gemma-3-1B | 8-bit | 0 | 13.02 | 905 MB |
+| Gemma-3-1B | 16-bit | 16,384 | 9.58 | 1,126 MB |
+| Gemma-3-1B | 8-bit | 16,384 | 9.85 | 1,058 MB |
+| Gemma-3-4B | 16-bit | 16,384 | 2.49 | 4,873 MB |
+| Gemma-3-4B | 8-bit | 16,384 | 2.95 | 4,436 MB |
+| Gemma-3-4B | 8-bit | 32,768 | 2.31 | 4,792 MB |
+
+- **8-bit memory pays off at long lengths:** it is 18% faster for Gemma-3-4B at 16k and uses about 440 MB less RAM. At 32k, 8-bit uses less RAM than 16-bit does at 16k.
+- **Gemma-3-1B slows down very little.** It still writes about 10 tok/s with 16k in memory.
+- **Peak RAM is overstated.** It includes the memory-mapped model file (about 2.5 GB for 4B), which Windows can drop and re-read from disk under pressure.
+- **Chosen windows:** 32k (8-bit) for 8 GB machines, which still writes about 2.3 tok/s when full, and 16k (8-bit) for 4 GB machines.
+
 ## Lenovo X240, 4 GB
 
 Not tested yet.
