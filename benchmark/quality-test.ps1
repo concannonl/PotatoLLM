@@ -1,6 +1,9 @@
 # PotatoLLM quality test.
 # Asks each candidate model the same everyday questions using the app's own settings,
 # then writes a blind side-by-side report (models shown as A / B / C).
+# Run with -ReportOnly to rebuild the report from the latest saved results without re-testing.
+
+param([switch]$ReportOnly)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -48,6 +51,7 @@ $Questions = @(
        look = "Should say it doesn't know (it hasn't happened as far as the model knows) rather than invent a winner." }
 )
 
+if (-not $ReportOnly) {
 # ---------- Engine ----------
 $server = @($BinDir, (Join-Path $OldKit 'llama')) | ForEach-Object {
     Get-ChildItem -Path $_ -Recurse -Filter 'llama-server.exe' -ErrorAction SilentlyContinue
@@ -188,34 +192,44 @@ foreach ($m in $models) {
     }
 }
 
-# ---------- Report ----------
+
 $stamp = Get-Date -Format 'yyyyMMdd-HHmm'
 $jsonPath = Join-Path $Root "quality-results-$stamp.json"
-$htmlPath = Join-Path $Root "quality-report-$stamp.html"
-
 $doc = [pscustomobject]@{
     machine = $env:COMPUTERNAME; date = (Get-Date).ToString('s'); system_prompt = $SystemPrompt
     questions = @($Questions | ForEach-Object { $_.q }); results = $results
 }
 $doc | ConvertTo-Json -Depth 5 | Out-File -FilePath $jsonPath -Encoding utf8
+} else {
+    $latest = Get-ChildItem -Path $Root -Filter 'quality-results-*.json' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $latest) { throw "No quality-results-*.json found in $Root. Run the full test first." }
+    $jsonPath = $latest.FullName
+    $stamp = $latest.BaseName -replace '^quality-results-', ''
+    $raw = [IO.File]::ReadAllText($jsonPath, [Text.Encoding]::UTF8)
+    $results = @((ConvertFrom-Json $raw).results)
+    Write-Host "Rebuilding the report from $jsonPath"
+}
+
+# ---------- Report ----------
+$htmlPath = Join-Path $Root "quality-report-$stamp.html"
 
 # Blind labels in random order.
-$names = @($models | ForEach-Object { $_.name } | Where-Object { $n = $_; $results | Where-Object { $_.model -eq $n } })
+$names = @($results | ForEach-Object { $_.model } | Select-Object -Unique)
 $shuffled = @($names | Get-Random -Count $names.Count)
 $labels = @{}
 for ($i = 0; $i -lt $shuffled.Count; $i++) { $labels[$shuffled[$i]] = [string][char](65 + $i) }
-function H($s) { [System.Net.WebUtility]::HtmlEncode([string]$s) }
+function HtmlText($s) { [System.Net.WebUtility]::HtmlEncode([string]$s) }
 
 $sb = New-Object System.Text.StringBuilder
 for ($qi = 0; $qi -lt $Questions.Count; $qi++) {
-    [void]$sb.Append("<section><h2>Question $($qi + 1)</h2><p class='q'>$(H $Questions[$qi].q)</p>")
-    [void]$sb.Append("<p class='look'><b>What to look for:</b> $(H $Questions[$qi].look)</p><div class='grid'>")
+    [void]$sb.Append("<section><h2>Question $($qi + 1)</h2><p class='q'>$(HtmlText $Questions[$qi].q)</p>")
+    [void]$sb.Append("<p class='look'><b>What to look for:</b> $(HtmlText $Questions[$qi].look)</p><div class='grid'>")
     foreach ($name in $shuffled) {
         $lab = $labels[$name]
-        $r = $results | Where-Object { $_.model -eq $name -and $_.question -eq $qi } | Select-Object -First 1
+        $r = $results | Where-Object { $_.model -eq $name -and [int]$_.question -eq $qi } | Select-Object -First 1
         [void]$sb.Append("<div class='card'><div class='head'><span class='label'>$lab</span>")
         [void]$sb.Append("<label class='pick'><input type='radio' name='q$qi' value='$lab'> Best</label></div>")
-        [void]$sb.Append("<div class='ans'>$(H $r.answer)</div></div>")
+        [void]$sb.Append("<div class='ans'>$(HtmlText $r.answer)</div></div>")
     }
     [void]$sb.Append("</div></section>")
 }
@@ -226,7 +240,7 @@ foreach ($name in $shuffled) {
     $avgSecs = if ($rs.Count) { [math]::Round(($rs | Measure-Object seconds -Average).Average, 0) } else { '' }
     $tpsList = @($rs | Where-Object { $_.reply_tps } | ForEach-Object { $_.reply_tps })
     $avgTps = if ($tpsList.Count) { [math]::Round(($tpsList | Measure-Object -Average).Average, 1) } else { '' }
-    [void]$reveal.Append("<tr><td><b>$($labels[$name])</b></td><td>$(H $name)</td><td>$avgSecs s</td><td>$avgTps</td></tr>")
+    [void]$reveal.Append("<tr><td><b>$($labels[$name])</b></td><td>$(HtmlText $name)</td><td>$avgSecs s</td><td>$avgTps</td></tr>")
 }
 
 $html = @'
