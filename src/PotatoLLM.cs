@@ -1421,8 +1421,11 @@ namespace PotatoLLM
             {
                 string common = "-m \"" + modelPath + "\" -c " + ctx + " -t " + threads;
                 string tuned = common + " -tb " + threadsBatch + " -np 1 --no-webui";
-                // Compact chat memory needs flash attention. Try the full tuned settings first;
-                // if this engine version rejects any of them, step back to safer ones.
+                // Memory savers, only passed if this engine version understands them:
+                // newer engines keep copies of earlier prompts in RAM (up to 8 GB by default) to switch
+                // back to them quickly. PotatoLLM saves each chat's memory to disk itself, so turn it off.
+                string help = EngineHelp();
+                if (help.Contains("--cache-ram")) tuned += " --cache-ram 0";
                 // Trailing forward slash: a backslash before the closing quote would break the argument.
                 string slotArg = " --slot-save-path \"" + memoryDir + "/\"";
                 string kvArgs = " -ctk " + kvCache + " -ctv " + kvCache + " -fa on";
@@ -1439,6 +1442,28 @@ namespace PotatoLLM
             });
             t.IsBackground = true;
             t.Start();
+        }
+
+        // The engine's list of options, so new options are only used when it supports them.
+        string EngineHelp()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo(enginePath, "--help");
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.WorkingDirectory = Path.GetDirectoryName(enginePath);
+                using (var p = Process.Start(psi))
+                {
+                    var err = p.StandardError.ReadToEndAsync();
+                    string text = p.StandardOutput.ReadToEnd();
+                    if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } }
+                    return text + err.Result;
+                }
+            }
+            catch { return ""; }
         }
 
         bool TryStart(string args, bool appendLog)
