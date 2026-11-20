@@ -2,7 +2,7 @@
 
 A private AI chat assistant that runs entirely on cheap, low-powered Windows laptops, such as ex-corporate ThinkPads. Designed to be extremely simple to use, for people with no technical knowledge of LLMs. 
 
-If you have 8Gb of system memory, PotatoLLM can run a small but relatively capable AI chat assistant right from your PC, without needing an internet connection. It works in 4Gb too, but you'll be getting a much less intelligent AI model. 
+If you have 8Gb of system memory, PotatoLLM can run a small but relatively capable AI chat assistant right from your PC, without needing an internet connection. It works in 4Gb too, but you'll be getting a much less intelligent AI model. Either way, it doesn't do anything fancy, but you can attach documents to chats for the AI to read - as long as they aren't too big. 
 
 This runs on your laptop, with no GPU, so it's going to be slow compared to ChatGPT or Claude - chats may take 30-60 seconds to begin while the AI reads your question, and responses will appear about around 3-5 words per second. I tested it on a Intel(R) Core(TM) i5-5300U CPU @ 2.30GHz - your mileage may vary.
 
