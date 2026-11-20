@@ -1,5 +1,5 @@
 # Builds Offline Assistant: compiles the app, gathers the engine (llama.cpp) and PDF reader
-# (Poppler pdftotext) with their licences into dist\, then makes output\OfflineAssistant-Setup.exe.
+# (Xpdf pdftotext) with their licences into dist\, then makes output\OfflineAssistant-Setup.exe.
 # Runs on GitHub Actions (see .github/workflows/build.yml) or on any Windows PC.
 
 param([string]$Version = "0.0.0-dev")
@@ -12,7 +12,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Dist = Join-Path $Root 'dist'
 $Tmp  = Join-Path $Root 'build-tmp'
 Remove-Item $Dist, $Tmp -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $Dist, "$Dist\engine", "$Dist\tools\poppler", "$Dist\licenses", $Tmp | Out-Null
+New-Item -ItemType Directory -Force -Path $Dist, "$Dist\engine", "$Dist\tools", "$Dist\licenses", $Tmp | Out-Null
 
 $hdr = @{ 'User-Agent' = 'potatollm-build' }
 if ($env:GITHUB_TOKEN) { $hdr['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
@@ -58,49 +58,40 @@ if (Test-Path "$Dist\engine\libomp.dll") {
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/llvm/llvm-project/main/openmp/LICENSE.TXT" -OutFile "$Dist\licenses\llvm-openmp-LICENSE.txt"
 }
 
-# ---------- 3. PDF reader: Poppler pdftotext ----------
-Step "Getting Poppler (pdftotext)"
-$pop = Invoke-RestMethod -Uri 'https://api.github.com/repos/oschwartz10612/poppler-windows/releases/latest' -Headers $hdr
-$popAsset = $pop.assets | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1
-if (-not $popAsset) { throw "No Poppler for Windows download found." }
-Write-Host "Poppler $($pop.tag_name) ($($popAsset.name))"
-Invoke-WebRequest -Uri $popAsset.browser_download_url -OutFile "$Tmp\poppler.zip"
-Expand-Archive "$Tmp\poppler.zip" -DestinationPath "$Tmp\poppler"
-$pdftotext = Get-ChildItem "$Tmp\poppler" -Recurse -Filter 'pdftotext.exe' | Select-Object -First 1
-if (-not $pdftotext) { throw "pdftotext.exe missing from the Poppler download." }
-Copy-Item $pdftotext.FullName "$Dist\tools\poppler"
-Get-ChildItem $pdftotext.DirectoryName -Filter '*.dll' | Copy-Item -Destination "$Dist\tools\poppler"
-$popVersion = ($pop.tag_name -replace '^v', '') -replace '-\d+$', ''
-Invoke-WebRequest -Uri "https://gitlab.freedesktop.org/poppler/poppler/-/raw/poppler-$popVersion/COPYING" -OutFile "$Dist\licenses\poppler-COPYING.txt"
-# Every licence file in the Windows build (its libraries each have their own).
-$popLic = "$Dist\licenses\poppler-windows-bundle"
-New-Item -ItemType Directory -Force -Path $popLic | Out-Null
-$popRoot = (Resolve-Path "$Tmp\poppler").Path
-Get-ChildItem "$Tmp\poppler" -Recurse -File | Where-Object {
-    $_.Name -match '^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT)' -or $_.FullName -match '[\\/](licenses?|licences?)[\\/]'
-} | ForEach-Object {
-    $rel = $_.FullName.Substring($popRoot.Length).TrimStart('\') -replace '[\\/]', '__'
-    Copy-Item $_.FullName (Join-Path $popLic ($rel + $(if ($_.Extension) { '' } else { '.txt' })))
+# ---------- 3. PDF reader: Xpdf pdftotext ----------
+# Xpdf's pdftotext is one self-contained program (no extra libraries). Its licence asks that the
+# README, help files, COPYING and COPYING3 travel with it, and we attach its source to releases.
+Step "Getting Xpdf (pdftotext)"
+$XpdfVersion = '4.06'
+Invoke-WebRequest -Uri "https://dl.xpdfreader.com/xpdf-tools-win-$XpdfVersion.zip" -OutFile "$Tmp\xpdf.zip"
+Expand-Archive "$Tmp\xpdf.zip" -DestinationPath "$Tmp\xpdf"
+$pdftotext = Get-ChildItem "$Tmp\xpdf" -Recurse -Filter 'pdftotext.exe' | Where-Object { $_.FullName -match 'bin64' } | Select-Object -First 1
+if (-not $pdftotext) { throw "pdftotext.exe (64-bit) missing from the Xpdf download." }
+New-Item -ItemType Directory -Force -Path "$Dist\tools\xpdf", "$Dist\licenses\xpdf" | Out-Null
+Copy-Item $pdftotext.FullName "$Dist\tools\xpdf"
+$xpdfRoot = Get-ChildItem "$Tmp\xpdf" -Directory | Select-Object -First 1
+foreach ($name in 'README', 'COPYING', 'COPYING3', 'ANNOUNCE', 'CHANGES') {
+    $f = Join-Path $xpdfRoot.FullName $name
+    if (Test-Path $f) { Copy-Item $f "$Dist\licenses\xpdf\$name.txt" }
 }
-Write-Host "Poppler bundle licence files: $((Get-ChildItem $popLic).Count)"
-# The exact Poppler source, attached to releases (GPL: source for the binaries we ship).
+Get-ChildItem $xpdfRoot.FullName -Recurse -Filter 'pdftotext*' | Where-Object { $_.Extension -in '.txt', '.1', '.html' } |
+    Copy-Item -Destination "$Dist\licenses\xpdf"
+Write-Host "Xpdf ${XpdfVersion}: $((Get-ChildItem "$Dist\licenses\xpdf").Count) licence/help files: $((Get-ChildItem "$Dist\licenses\xpdf" | ForEach-Object { $_.Name }) -join ', ')"
+if (-not (Test-Path "$Dist\licenses\xpdf\COPYING.txt")) { throw "Xpdf's COPYING file is missing; can't ship it without its licence." }
 New-Item -ItemType Directory -Force -Path (Join-Path $Root 'output') | Out-Null
-Invoke-WebRequest -Uri "https://poppler.freedesktop.org/poppler-$popVersion.tar.xz" -OutFile (Join-Path $Root "output\poppler-$popVersion-source.tar.xz")
-# What's in the engine and tools folders, for the record.
-$shipped = (Get-ChildItem "$Dist\tools\poppler" | ForEach-Object { $_.Name }) -join ', '
+Invoke-WebRequest -Uri "https://dl.xpdfreader.com/xpdf-$XpdfVersion.tar.gz" -OutFile (Join-Path $Root "output\xpdf-$XpdfVersion-source.tar.gz")
+
 @(
     "Offline Assistant includes these open-source programs:",
     "",
     "llama.cpp $llamaTag (MIT licence) - https://github.com/ggml-org/llama.cpp",
     "  Source: https://github.com/ggml-org/llama.cpp/tree/$llamaTag",
+    "  libomp.dll: LLVM OpenMP runtime (Apache License 2.0 with LLVM Exceptions) - https://github.com/llvm/llvm-project",
     "",
-    "Poppler $popVersion, pdftotext and its libraries (GPL) - https://poppler.freedesktop.org",
-    "  Windows build: https://github.com/oschwartz10612/poppler-windows/releases/tag/$($pop.tag_name)",
-    "  Source: https://poppler.freedesktop.org/poppler-$popVersion.tar.xz",
-    "  Source is also attached to each Offline Assistant release on GitHub.",
-    "  Files included: $shipped",
-    "  These libraries come from conda-forge packages; their licences are in the poppler-windows-bundle folder",
-    "  and their recipes and sources are at https://github.com/conda-forge (one '<name>-feedstock' repository each).",
+    "Xpdf $XpdfVersion pdftotext (GNU GPL v2 or v3) - https://www.xpdfreader.com",
+    "  Unmodified Windows 64-bit binary from https://dl.xpdfreader.com/xpdf-tools-win-$XpdfVersion.zip",
+    "  Source: https://dl.xpdfreader.com/xpdf-$XpdfVersion.tar.gz (also attached to each Offline Assistant release on GitHub)",
+    "  Its README, COPYING (GPL v2) and COPYING3 (GPL v3) are in the xpdf folder.",
     "",
     "The AI model is downloaded separately on first run, under its own licence (Gemma Terms of Use)."
 ) | Set-Content "$Dist\licenses\SOURCES.txt"

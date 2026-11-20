@@ -16,4 +16,4 @@ Gemma is provided under and subject to the Gemma Terms of Use found at ai.google
 By using Offline Assistant, you agree to use Gemma in line with those terms, and not to use it for any of the purposes listed in the Gemma Prohibited Use Policy at ai.google.dev/gemma/prohibited_use_policy (for example, anything illegal, harmful, or meant to deceive or harass people).
 
 4. Other software included
-Offline Assistant includes llama.cpp (MIT licence) and Poppler's pdftotext (GNU GPL). Their licences, and where to get their source code, are in the "licenses" folder.
+Offline Assistant includes llama.cpp (MIT licence) and Xpdf's pdftotext (GNU GPL). Their licences, and where to get their source code, are in the "licenses" folder.

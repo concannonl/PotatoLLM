@@ -25,7 +25,7 @@ Every push to `main` builds the installer on GitHub Actions (`.github/workflows/
 - Checks the computer and picks the right model automatically. With 8 GB of memory or more it uses **Gemma 3 4B** with a 32k-token chat memory; otherwise it uses **Gemma 3 1B** with a 16k-token chat memory. Chat memory is stored in compact 8-bit form. See [docs/benchmarks.md](docs/benchmarks.md) for why.
 - Chooses the best engine settings for the CPU. The user never sees them.
 - Provides a simple native chat window with saved chats, a Stop button and New chat.
-- Lets you **add documents** (Word .docx, PDF, .txt, .rtf) with a button or by dragging them onto the window. The assistant reads the text; long documents show how long reading will take first. PDF support uses Poppler's `pdftotext`, which the installer downloads.
+- Lets you **add documents** (Word .docx, PDF, .txt, .rtf) with a button or by dragging them onto the window. The assistant reads the text; long documents show how long reading will take first. PDF support uses Xpdf's `pdftotext`, which is included in the installer.
 - Shows a **chat memory** bar: how much of the model's context window the chat fills. Its tooltip explains it in plain language.
 - Keeps chats only on the computer, in `%LOCALAPPDATA%\OfflineAssistant\chats`.
 
@@ -33,7 +33,7 @@ Every push to `main` builds the installer on GitHub Actions (`.github/workflows/
 
 | Part | What it is |
 |---|---|
-| `build/build.ps1`, `installer/` | Compiles the app and packages it with [llama.cpp](https://github.com/ggml-org/llama.cpp) (Windows CPU build) and Poppler's `pdftotext` into an Inno Setup installer |
+| `build/build.ps1`, `installer/` | Compiles the app and packages it with [llama.cpp](https://github.com/ggml-org/llama.cpp) (Windows CPU build) and Xpdf's `pdftotext` into an Inno Setup installer |
 | `src/OfflineAssistant.cs` | The chat window. It is C# 5 / WinForms, so it compiles on the user's machine with the `csc.exe` built into Windows, with nothing extra to install |
 | `benchmark/` | A one-click speed test for llama.cpp across several small models and thread counts |
 
@@ -47,4 +47,4 @@ See [docs/benchmarks.md](docs/benchmarks.md). In short, these laptops are limite
 
 ## Licence
 
-PotatoLLM's own code is MIT licensed; see [LICENSE](LICENSE). It bundles llama.cpp (MIT) and Poppler's pdftotext (GPL), and downloads Google's Gemma model under the Gemma Terms of Use. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the details. Users accept short [terms of use](installer/terms.txt) when installing.
+PotatoLLM's own code is MIT licensed; see [LICENSE](LICENSE). It bundles llama.cpp (MIT) and Xpdf's pdftotext (GPL), and downloads Google's Gemma model under the Gemma Terms of Use. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the details. Users accept short [terms of use](installer/terms.txt) when installing.

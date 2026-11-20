@@ -11,11 +11,10 @@ Its own third-party components (such as cpp-httplib and nlohmann/json) are liste
 ### LLVM OpenMP runtime (`libomp.dll`): Apache License 2.0 with LLVM Exceptions
 Shipped with the llama.cpp Windows build. https://github.com/llvm/llvm-project
 
-### Poppler `pdftotext`: GNU General Public License v2 or later
-Used to read text from PDFs. It runs as a separate program; it isn't built into Offline Assistant, so the GPL applies to Poppler and not to the app's own code.
-- Project: https://poppler.freedesktop.org
-- Windows build: https://github.com/oschwartz10612/poppler-windows (built from conda-forge packages)
-- **Source code:** each GitHub release of Offline Assistant has the exact Poppler source archive it was built with attached. The Windows build's other libraries come from conda-forge, whose recipes and sources are listed at https://github.com/conda-forge. Their licence files are included in the installer.
+### Xpdf `pdftotext`: GNU General Public License v2 or v3
+Used to read text from PDFs. It's an unmodified copy of the official Windows build from https://www.xpdfreader.com, and it runs as a separate program. It isn't built into Offline Assistant, so the GPL applies to Xpdf and not to the app's own code.
+- Its README, help file, COPYING (GPL v2) and COPYING3 (GPL v3) are installed in the app's `licenses\xpdf` folder, as its licence asks.
+- **Source code:** https://dl.xpdfreader.com/ (the `xpdf-<version>.tar.gz` matching the version in `licenses\SOURCES.txt`). It is also attached to each GitHub release of Offline Assistant.
 
 ## Downloaded on first run (not included in the installer)
 

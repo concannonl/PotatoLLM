@@ -36,5 +36,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $files = @('output/OfflineAssistant-Setup.exe') + (Get-ChildItem output -Filter 'poppler-*-source.tar.xz' | ForEach-Object { $_.FullName })
+          $files = @('output/OfflineAssistant-Setup.exe') + (Get-ChildItem output -Filter '*-source.tar.gz' | ForEach-Object { $_.FullName })
           gh release create "${{ github.ref_name }}" @files --title "Offline Assistant ${{ github.ref_name }}" --generate-notes
