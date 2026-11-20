@@ -3,3 +3,4 @@
 *.ps1 -text
 *.cs  -text
 *.iss -text
+installer/terms.txt -text

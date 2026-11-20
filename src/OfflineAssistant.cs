@@ -910,6 +910,7 @@ namespace OfflineAssistant
             var cfg = new Config(Path.Combine(appDir, "config.ini"));
             modelChoice = ModelChoice.ForThisComputer();
             modelsDir = Path.Combine(appDir, "models");
+            WriteModelNotice(modelsDir);
             enginePath = cfg.Get("engine", FindFile(Path.Combine(appDir, "engine"), "llama-server.exe"));
             modelPath = cfg.Get("model", "");
             if (!File.Exists(modelPath)) modelPath = modelChoice.FindLocal(modelsDir) ?? Path.Combine(modelsDir, modelChoice.File);
@@ -1166,6 +1167,22 @@ namespace OfflineAssistant
         }
 
         void SetStatus(string text) { status.Text = text; }
+
+        // Gemma's terms require this notice to travel with every copy of the model.
+        static void WriteModelNotice(string dir)
+        {
+            try
+            {
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, "NOTICE.txt");
+                if (!File.Exists(path))
+                    File.WriteAllText(path,
+                        "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms\r\n\r\n" +
+                        "Use is also subject to the Gemma Prohibited Use Policy at ai.google.dev/gemma/prohibited_use_policy\r\n" +
+                        "If you copy the model file to someone else, include this notice with it.\r\n");
+            }
+            catch { }
+        }
 
         static string FindFile(string dir, string name)
         {

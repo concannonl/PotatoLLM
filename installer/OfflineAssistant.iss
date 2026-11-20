@@ -27,6 +27,7 @@ OutputBaseFilename=OfflineAssistant-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+LicenseFile=terms.txt
 UninstallDisplayIcon={app}\OfflineAssistant.exe
 UninstallDisplayName=Offline Assistant
 AppMutex=OfflineAssistant_SingleInstance
@@ -46,7 +47,7 @@ Type: files; Name: "{app}\config.ini"
 Source: "..\dist\OfflineAssistant.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\engine\*"; DestDir: "{app}\engine"; Flags: ignoreversion recursesubdirs
 Source: "..\dist\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs
-Source: "..\dist\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\dist\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
 ; Offline install: a model file placed next to Setup.exe is copied instead of downloaded.
 Source: "{src}\*.gguf"; DestDir: "{app}\models"; Flags: external skipifsourcedoesntexist ignoreversion
 

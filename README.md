@@ -12,6 +12,8 @@ Windows may warn that the installer is from an unknown publisher, because it isn
 
 **Installing without internet** (for example from a USB stick): put the model file next to `OfflineAssistant-Setup.exe` before running it. Use [Gemma 3 4B](https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf) for laptops with 8 GB of memory or more, or [Gemma 3 1B](https://huggingface.co/bartowski/google_gemma-3-1b-it-GGUF/resolve/main/google_gemma-3-1b-it-Q4_K_M.gguf) for 4 GB. The installer copies it instead of downloading.
 
+If you pass the model file on to someone else, Gemma's terms require a notice to go with it: include `NOTICE.txt` from the app's `models` folder (it says *"Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms"*).
+
 **Uninstalling:** use Windows Settings → Apps. It asks before deleting your saved chats.
 
 ### For developers
@@ -42,3 +44,7 @@ Everything is installed to `%LOCALAPPDATA%\OfflineAssistant`. The logs are in it
 ## Performance
 
 See [docs/benchmarks.md](docs/benchmarks.md). In short, these laptops are limited by memory bandwidth, so reply speed is roughly **11 GB/s ÷ model file size**. llama.cpp already gets close to that limit, so the gains come from choosing the right model and settings rather than from new maths code.
+
+## Licence
+
+PotatoLLM's own code is MIT licensed; see [LICENSE](LICENSE). It bundles llama.cpp (MIT) and Poppler's pdftotext (GPL), and downloads Google's Gemma model under the Gemma Terms of Use. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the details. Users accept short [terms of use](installer/terms.txt) when installing.

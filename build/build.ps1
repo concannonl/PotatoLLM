@@ -47,6 +47,16 @@ Expand-Archive "$Tmp\llama.zip" -DestinationPath "$Tmp\llama"
 Get-ChildItem "$Tmp\llama" -Recurse -Include 'llama-server.exe', '*.dll' | Copy-Item -Destination "$Dist\engine"
 if (-not (Test-Path "$Dist\engine\llama-server.exe")) { throw "llama-server.exe missing from the llama.cpp download." }
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/llama.cpp/$llamaTag/LICENSE" -OutFile "$Dist\licenses\llama.cpp-LICENSE.txt"
+# llama.cpp's own third-party licences (cpp-httplib, nlohmann/json, ...), if it lists them.
+New-Item -ItemType Directory -Force -Path "$Dist\licenses\llama.cpp-third-party" | Out-Null
+try {
+    $files = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/contents/licenses?ref=$llamaTag" -Headers $hdr
+    foreach ($f in $files) { if ($f.type -eq 'file') { Invoke-WebRequest -Uri $f.download_url -OutFile "$Dist\licenses\llama.cpp-third-party\$($f.name).txt" } }
+} catch { Write-Host "llama.cpp has no licenses folder at $llamaTag" }
+Write-Host "llama.cpp third-party licences: $((Get-ChildItem "$Dist\licenses\llama.cpp-third-party").Count)"
+if (Test-Path "$Dist\engine\libomp.dll") {
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/llvm/llvm-project/main/openmp/LICENSE.TXT" -OutFile "$Dist\licenses\llvm-openmp-LICENSE.txt"
+}
 
 # ---------- 3. PDF reader: Poppler pdftotext ----------
 Step "Getting Poppler (pdftotext)"
@@ -62,6 +72,22 @@ Copy-Item $pdftotext.FullName "$Dist\tools\poppler"
 Get-ChildItem $pdftotext.DirectoryName -Filter '*.dll' | Copy-Item -Destination "$Dist\tools\poppler"
 $popVersion = ($pop.tag_name -replace '^v', '') -replace '-\d+$', ''
 Invoke-WebRequest -Uri "https://gitlab.freedesktop.org/poppler/poppler/-/raw/poppler-$popVersion/COPYING" -OutFile "$Dist\licenses\poppler-COPYING.txt"
+# Every licence file in the Windows build (its libraries each have their own).
+$popLic = "$Dist\licenses\poppler-windows-bundle"
+New-Item -ItemType Directory -Force -Path $popLic | Out-Null
+$popRoot = (Resolve-Path "$Tmp\poppler").Path
+Get-ChildItem "$Tmp\poppler" -Recurse -File | Where-Object {
+    $_.Name -match '^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT)' -or $_.FullName -match '[\\/](licenses?|licences?)[\\/]'
+} | ForEach-Object {
+    $rel = $_.FullName.Substring($popRoot.Length).TrimStart('\') -replace '[\\/]', '__'
+    Copy-Item $_.FullName (Join-Path $popLic ($rel + $(if ($_.Extension) { '' } else { '.txt' })))
+}
+Write-Host "Poppler bundle licence files: $((Get-ChildItem $popLic).Count)"
+# The exact Poppler source, attached to releases (GPL: source for the binaries we ship).
+New-Item -ItemType Directory -Force -Path (Join-Path $Root 'output') | Out-Null
+Invoke-WebRequest -Uri "https://poppler.freedesktop.org/poppler-$popVersion.tar.xz" -OutFile (Join-Path $Root "output\poppler-$popVersion-source.tar.xz")
+# What's in the engine and tools folders, for the record.
+$shipped = (Get-ChildItem "$Dist\tools\poppler" | ForEach-Object { $_.Name }) -join ', '
 @(
     "Offline Assistant includes these open-source programs:",
     "",
@@ -71,10 +97,16 @@ Invoke-WebRequest -Uri "https://gitlab.freedesktop.org/poppler/poppler/-/raw/pop
     "Poppler $popVersion, pdftotext and its libraries (GPL) - https://poppler.freedesktop.org",
     "  Windows build: https://github.com/oschwartz10612/poppler-windows/releases/tag/$($pop.tag_name)",
     "  Source: https://poppler.freedesktop.org/poppler-$popVersion.tar.xz",
-    "  Other libraries in this build come from conda-forge; their sources are listed at https://conda-forge.org",
+    "  Source is also attached to each Offline Assistant release on GitHub.",
+    "  Files included: $shipped",
+    "  These libraries come from conda-forge packages; their licences are in the poppler-windows-bundle folder",
+    "  and their recipes and sources are at https://github.com/conda-forge (one '<name>-feedstock' repository each).",
     "",
     "The AI model is downloaded separately on first run, under its own licence (Gemma Terms of Use)."
 ) | Set-Content "$Dist\licenses\SOURCES.txt"
+Copy-Item (Join-Path $Root 'LICENSE') "$Dist\licenses\Offline-Assistant-LICENSE.txt"
+Copy-Item (Join-Path $Root 'THIRD_PARTY_NOTICES.md') "$Dist\licenses\THIRD_PARTY_NOTICES.txt"
+Copy-Item (Join-Path $Root 'installer\terms.txt') "$Dist\licenses\TERMS-OF-USE.txt"
 
 # ---------- 4. Installer ----------
 Step "Making the installer"
