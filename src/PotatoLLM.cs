@@ -1426,6 +1426,10 @@ namespace PotatoLLM
                 // back to them quickly. PotatoLLM saves each chat's memory to disk itself, so turn it off.
                 string help = EngineHelp();
                 if (help.Contains("--cache-ram")) tuned += " --cache-ram 0";
+                // For models like Gemma that only remember a recent stretch in most layers, the engine saves
+                // snapshots so it can rewind (up to 32 by default, roughly 90 MB each for Gemma 3 4B).
+                // A chat only ever adds text at the end, so two are plenty.
+                if (help.Contains("--ctx-checkpoints")) tuned += " --ctx-checkpoints 2";
                 // Trailing forward slash: a backslash before the closing quote would break the argument.
                 string slotArg = " --slot-save-path \"" + memoryDir + "/\"";
                 string kvArgs = " -ctk " + kvCache + " -ctv " + kvCache + " -fa on";
