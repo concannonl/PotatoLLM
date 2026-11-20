@@ -2,7 +2,9 @@
 # (Xpdf pdftotext) with their licences into dist\, then makes output\PotatoLLM-Setup.exe.
 # Runs on GitHub Actions (see .github/workflows/build.yml) or on any Windows PC.
 
-param([string]$Version = "0.0.0-dev")
+# -LlamaVersion: a llama.cpp release tag (e.g. b12600) or "latest", to try a different engine.
+# Without it, the version pinned in build/llama-version.txt is used.
+param([string]$Version = "0.0.0-dev", [string]$LlamaVersion = "")
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -30,17 +32,30 @@ if ($LASTEXITCODE -ne 0) { throw "The app didn't compile (see the errors above).
 
 # ---------- 2. Engine: llama.cpp Windows CPU build ----------
 Step "Getting llama.cpp"
-$rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30' -Headers $hdr
-$llamaTag = $null; $asset = $null
-foreach ($r in $rels) {
-    $asset = $r.assets | Where-Object {
+# The engine version is pinned, so a new llama.cpp release can't silently change or drop the
+# settings the app relies on. To upgrade: build with -LlamaVersion latest (or the Actions
+# "llama_version" box), test on real hardware, then update build/llama-version.txt.
+function Get-WinCpuAsset($release) {
+    $release.assets | Where-Object {
         $_.name -match 'win' -and $_.name -match 'x64' -and $_.name -match '\.zip$' -and
         $_.name -match 'cpu|avx2' -and $_.name -notmatch 'cuda|vulkan|hip|sycl|opencl|arm64|cudart'
     } | Select-Object -First 1
-    if ($asset) { $llamaTag = $r.tag_name; break }
 }
-if (-not $asset) { throw "No Windows CPU build of llama.cpp found." }
-Write-Host "llama.cpp $llamaTag ($($asset.name))"
+$pinned = Get-Content (Join-Path $PSScriptRoot 'llama-version.txt') -ErrorAction SilentlyContinue | Select-Object -First 1
+$wanted = if ($LlamaVersion) { $LlamaVersion.Trim() } else { "$pinned".Trim() }
+$rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30' -Headers $hdr
+$newest = $null
+foreach ($r in $rels) { if (Get-WinCpuAsset $r) { $newest = $r.tag_name; break } }
+if (-not $wanted -or $wanted -eq 'latest') { $wanted = $newest }
+$release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/$wanted" -Headers $hdr
+$asset = Get-WinCpuAsset $release
+if (-not $asset) { throw "llama.cpp $wanted has no Windows CPU build." }
+$llamaTag = $release.tag_name
+$source = if ($LlamaVersion) { 'requested' } else { 'pinned' }
+if ($newest -and $newest -ne $llamaTag) {
+    Write-Host "Note: a newer llama.cpp ($newest) is available. Using $llamaTag ($source). To try the newer one, build with -LlamaVersion $newest."
+}
+Write-Host "llama.cpp $llamaTag ($($asset.name), $source)"
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$Tmp\llama.zip"
 Expand-Archive "$Tmp\llama.zip" -DestinationPath "$Tmp\llama"
 # The server plus every DLL, side by side (the CPU backends are loaded from the exe's folder).

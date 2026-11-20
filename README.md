@@ -30,6 +30,8 @@ If you pass the model file on to someone else, Gemma's terms require a notice to
 
 Every push to `main` builds the installer on GitHub Actions (`.github/workflows/build.yml` runs `build/build.ps1`). Pushing a tag such as `v0.2.0` also publishes a release. `install.ps1` is the older script that builds from source on the target machine.
 
+**Engine version:** the llama.cpp version is pinned in `build/llama-version.txt`, because the app relies on specific engine settings. To try a newer one, go to **Actions → Build installer → Run workflow** and enter a tag, or `latest`, in the engine box. The build log says when a newer version exists. Test the installer on real hardware, then update the file.
+
 ## What it does 
 
 - Checks the computer and picks the right model automatically. With 8 GB of memory or more it uses **Gemma 3 4B** with a 32k-token chat memory; otherwise it uses **Gemma 3 1B** with a 16k-token chat memory. Chat memory is stored in compact 8-bit form. See [docs/benchmarks.md](docs/benchmarks.md) for why.

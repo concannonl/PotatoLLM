@@ -11,6 +11,10 @@ on:
         description: 'To publish a release, enter a version such as 0.1.0 (leave empty to just build)'
         required: false
         default: ''
+      llama_version:
+        description: 'To try a different engine, enter a llama.cpp tag such as b12600, or "latest" (leave empty for the pinned version)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -37,7 +41,7 @@ jobs:
         shell: powershell
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./build/build.ps1 -Version "${{ steps.version.outputs.version }}"
+        run: ./build/build.ps1 -Version "${{ steps.version.outputs.version }}" -LlamaVersion "${{ github.event.inputs.llama_version }}"
 
       - name: Keep the installer
         uses: actions/upload-artifact@v4
