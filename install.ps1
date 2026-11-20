@@ -1,4 +1,4 @@
-# Offline Assistant installer.
+# PotatoLLM installer.
 # Picks the best model for this computer, downloads the engine and model,
 # builds the chat app and adds shortcuts. No admin rights needed.
 
@@ -6,9 +6,16 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$AppName = 'Offline Assistant'
+$AppName = 'PotatoLLM'
 $Here    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Install = Join-Path $env:LOCALAPPDATA 'OfflineAssistant'
+$Install = Join-Path $env:LOCALAPPDATA 'PotatoLLM'
+# Earlier versions were called Offline Assistant: move that folder (chats, model) across.
+$OldInstall = Join-Path $env:LOCALAPPDATA 'OfflineAssistant'
+if ((Test-Path $OldInstall) -and -not (Test-Path $Install)) {
+    Get-Process OfflineAssistant -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    try { Rename-Item $OldInstall 'PotatoLLM' } catch { }
+}
 $Engine  = Join-Path $Install 'engine'
 $Models  = Join-Path $Install 'models'
 
@@ -47,6 +54,7 @@ $freeGB = [math]::Round((Get-PSDrive ($Install.Substring(0,1))).Free / 1GB, 1)
 if ($freeGB -lt ($model.gb + 1)) { Fail "Not enough disk space. Please free up at least $($model.gb + 1) GB and try again." }
 
 # Close any running copy so files can be replaced.
+Get-Process PotatoLLM -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process OfflineAssistant -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$Install*" } |
     Stop-Process -Force -ErrorAction SilentlyContinue
@@ -56,7 +64,7 @@ Start-Sleep -Milliseconds 500
 Step 2 "Getting the AI engine"
 $server = Get-ChildItem -Path $Engine -Recurse -Filter 'llama-server.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $server) {
-    $hdr  = @{ 'User-Agent' = 'offline-assistant-installer' }
+    $hdr  = @{ 'User-Agent' = 'potatollm-installer' }
     $rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30' -Headers $hdr
     $asset = $null
     foreach ($r in $rels) {
@@ -101,7 +109,7 @@ if (-not (Test-Path $modelPath) -or (Get-Item $modelPath).Length -lt 100MB) {
         if ($LASTEXITCODE -ne 0) {
             # The file may have been renamed upstream: look up the current name.
             try {
-                $info = Invoke-RestMethod -Uri "https://huggingface.co/api/models/$($model.repo)" -Headers @{ 'User-Agent' = 'offline-assistant-installer' }
+                $info = Invoke-RestMethod -Uri "https://huggingface.co/api/models/$($model.repo)" -Headers @{ 'User-Agent' = 'potatollm-installer' }
                 $file = $info.siblings.rfilename | Where-Object { $_ -match 'Q4_K_M\.gguf$' -and $_ -notmatch 'mmproj' } | Select-Object -First 1
             } catch { $file = $null }
             if (-not $file) { Fail "The download stopped. Run the installer again and it will carry on where it left off." }
@@ -125,7 +133,7 @@ $Tools = Join-Path $Install 'tools'
 $pdftotext = Get-ChildItem -Path $Tools -Recurse -Filter 'pdftotext.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $pdftotext) {
     try {
-        $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/oschwartz10612/poppler-windows/releases/latest' -Headers @{ 'User-Agent' = 'offline-assistant-installer' }
+        $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/oschwartz10612/poppler-windows/releases/latest' -Headers @{ 'User-Agent' = 'potatollm-installer' }
         $asset = $rel.assets | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1
         if ($asset) {
             New-Item -ItemType Directory -Force -Path $Tools | Out-Null
@@ -145,8 +153,8 @@ Step 5 "Building the chat window"
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
 if (-not (Test-Path $csc)) { Fail "This computer is missing the .NET Framework 4, which Windows normally includes." }
-$src = Join-Path $Here 'src\OfflineAssistant.cs'
-$exe = Join-Path $Install 'OfflineAssistant.exe'
+$src = Join-Path $Here 'src\PotatoLLM.cs'
+$exe = Join-Path $Install 'PotatoLLM.exe'
 $ErrorActionPreference = 'Continue'
 $buildOut = & $csc /nologo /target:winexe /optimize+ /platform:x64 "/out:$exe" `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll `
@@ -183,6 +191,9 @@ Write-Host "  $threads threads for writing, $threadsBatch for reading"
 # ---------- 6. Shortcuts ----------
 Step 7 "Adding shortcuts"
 $shell = New-Object -ComObject WScript.Shell
+foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+    Remove-Item (Join-Path $dir 'Offline Assistant.lnk') -ErrorAction SilentlyContinue
+}
 foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
     $lnk = $shell.CreateShortcut((Join-Path $dir "$AppName.lnk"))
     $lnk.TargetPath = $exe

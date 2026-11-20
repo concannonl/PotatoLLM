@@ -27,8 +27,8 @@ jobs:
       - name: Keep the installer
         uses: actions/upload-artifact@v4
         with:
-          name: OfflineAssistant-Setup
-          path: output/OfflineAssistant-Setup.exe
+          name: PotatoLLM-Setup
+          path: output/PotatoLLM-Setup.exe
 
       - name: Publish a release (version tags only)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -36,5 +36,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $files = @('output/OfflineAssistant-Setup.exe') + (Get-ChildItem output -Filter '*-source.tar.gz' | ForEach-Object { $_.FullName })
-          gh release create "${{ github.ref_name }}" @files --title "Offline Assistant ${{ github.ref_name }}" --generate-notes
+          $files = @('output/PotatoLLM-Setup.exe') + (Get-ChildItem output -Filter '*-source.tar.gz' | ForEach-Object { $_.FullName })
+          gh release create "${{ github.ref_name }}" @files --title "PotatoLLM ${{ github.ref_name }}" --notes-file .github/release-notes.md

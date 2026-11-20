@@ -1,4 +1,4 @@
-// Offline Assistant - a minimal native chat window for a local llama.cpp server.
+// PotatoLLM - a minimal native chat window for a local llama.cpp server.
 // Written for C# 5 so it compiles with the csc.exe built into every Windows (.NET Framework 4.x).
 
 using System;
@@ -19,7 +19,7 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Xml;
 
-namespace OfflineAssistant
+namespace PotatoLLM
 {
     static class Program
     {
@@ -27,11 +27,11 @@ namespace OfflineAssistant
         static void Main()
         {
             bool created;
-            using (var mutex = new Mutex(true, "OfflineAssistant_SingleInstance", out created))
+            using (var mutex = new Mutex(true, "PotatoLLM_SingleInstance", out created))
             {
                 if (!created)
                 {
-                    MessageBox.Show("Offline Assistant is already open.", "Offline Assistant");
+                    MessageBox.Show("PotatoLLM is already open.", "PotatoLLM");
                     return;
                 }
                 ServicePointManager.Expect100Continue = false;
@@ -746,7 +746,7 @@ namespace OfflineAssistant
         {
             if (string.IsNullOrEmpty(pdftotext) || !File.Exists(pdftotext))
                 throw new Exception("Reading PDFs isn't set up on this computer. Please run the installer again.");
-            string outFile = Path.Combine(Path.GetTempPath(), "offline-assistant-" + Guid.NewGuid().ToString("N") + ".txt");
+            string outFile = Path.Combine(Path.GetTempPath(), "potatollm-" + Guid.NewGuid().ToString("N") + ".txt");
             try
             {
                 var psi = new ProcessStartInfo(pdftotext, "-enc UTF-8 \"" + path + "\" \"" + outFile + "\"");
@@ -800,7 +800,7 @@ namespace OfflineAssistant
 
     public class ChatForm : Form
     {
-        const string AppName = "Offline Assistant";
+        const string AppName = "PotatoLLM";
         // Keep this identical to benchmark/quality-test.ps1 so test results match the app.
         // Today's date lets the model tell past from future (small models otherwise invent results).
         static string SystemPrompt
@@ -1317,7 +1317,7 @@ namespace OfflineAssistant
             {
                 long have = File.Exists(part) ? new FileInfo(part).Length : 0;
                 var req = (HttpWebRequest)WebRequest.Create(url);
-                req.UserAgent = "OfflineAssistant";
+                req.UserAgent = "PotatoLLM";
                 req.Timeout = 30000;
                 req.ReadWriteTimeout = 60000;
                 if (have > 0) req.AddRange(have);
@@ -1381,7 +1381,7 @@ namespace OfflineAssistant
             try
             {
                 var req = (HttpWebRequest)WebRequest.Create("https://huggingface.co/api/models/" + repo);
-                req.UserAgent = "OfflineAssistant";
+                req.UserAgent = "PotatoLLM";
                 req.Timeout = 30000;
                 using (var resp = req.GetResponse())
                 using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))

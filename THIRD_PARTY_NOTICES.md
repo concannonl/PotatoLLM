@@ -1,6 +1,6 @@
 # Third-party notices
 
-PotatoLLM's own code (the Offline Assistant app, installer, build and benchmark scripts) is licensed under the MIT licence; see [LICENSE](LICENSE). It works with the following third-party software and models, which keep their own licences. The installer copies the exact licence files for the versions it includes into the app's `licenses` folder.
+PotatoLLM's own code (the PotatoLLM app, installer, build and benchmark scripts) is licensed under the MIT licence; see [LICENSE](LICENSE). It works with the following third-party software and models, which keep their own licences. The installer copies the exact licence files for the versions it includes into the app's `licenses` folder.
 
 ## Included in the installer
 
@@ -12,9 +12,9 @@ Its own third-party components (such as cpp-httplib and nlohmann/json) are liste
 Shipped with the llama.cpp Windows build. https://github.com/llvm/llvm-project
 
 ### Xpdf `pdftotext`: GNU General Public License v2 or v3
-Used to read text from PDFs. It's an unmodified copy of the official Windows build from https://www.xpdfreader.com, and it runs as a separate program. It isn't built into Offline Assistant, so the GPL applies to Xpdf and not to the app's own code.
+Used to read text from PDFs. It's an unmodified copy of the official Windows build from https://www.xpdfreader.com, and it runs as a separate program. It isn't built into PotatoLLM, so the GPL applies to Xpdf and not to the app's own code.
 - Its README, help file, COPYING (GPL v2) and COPYING3 (GPL v3) are installed in the app's `licenses\xpdf` folder, as its licence asks.
-- **Source code:** https://dl.xpdfreader.com/ (the `xpdf-<version>.tar.gz` matching the version in `licenses\SOURCES.txt`). It is also attached to each GitHub release of Offline Assistant.
+- **Source code:** https://dl.xpdfreader.com/ (the `xpdf-<version>.tar.gz` matching the version in `licenses\SOURCES.txt`). It is also attached to each GitHub release of PotatoLLM.
 
 ## Downloaded on first run (not included in the installer)
 

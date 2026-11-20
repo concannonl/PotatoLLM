@@ -1,5 +1,5 @@
-# Builds Offline Assistant: compiles the app, gathers the engine (llama.cpp) and PDF reader
-# (Xpdf pdftotext) with their licences into dist\, then makes output\OfflineAssistant-Setup.exe.
+# Builds PotatoLLM: compiles the app, gathers the engine (llama.cpp) and PDF reader
+# (Xpdf pdftotext) with their licences into dist\, then makes output\PotatoLLM-Setup.exe.
 # Runs on GitHub Actions (see .github/workflows/build.yml) or on any Windows PC.
 
 param([string]$Version = "0.0.0-dev")
@@ -22,10 +22,10 @@ function Step($msg) { Write-Host ""; Write-Host "==> $msg" }
 # ---------- 1. Compile the app ----------
 Step "Compiling the app"
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-& $csc /nologo /target:winexe /optimize+ /platform:x64 "/out:$Dist\OfflineAssistant.exe" `
+& $csc /nologo /target:winexe /optimize+ /platform:x64 "/out:$Dist\PotatoLLM.exe" `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll `
     /r:System.Xml.dll /r:System.IO.Compression.dll /r:System.Management.dll `
-    (Join-Path $Root 'src\OfflineAssistant.cs')
+    (Join-Path $Root 'src\PotatoLLM.cs')
 if ($LASTEXITCODE -ne 0) { throw "The app didn't compile (see the errors above)." }
 
 # ---------- 2. Engine: llama.cpp Windows CPU build ----------
@@ -82,7 +82,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Root 'output') | Out-Null
 Invoke-WebRequest -Uri "https://dl.xpdfreader.com/xpdf-$XpdfVersion.tar.gz" -OutFile (Join-Path $Root "output\xpdf-$XpdfVersion-source.tar.gz")
 
 @(
-    "Offline Assistant includes these open-source programs:",
+    "PotatoLLM includes these open-source programs:",
     "",
     "llama.cpp $llamaTag (MIT licence) - https://github.com/ggml-org/llama.cpp",
     "  Source: https://github.com/ggml-org/llama.cpp/tree/$llamaTag",
@@ -90,12 +90,12 @@ Invoke-WebRequest -Uri "https://dl.xpdfreader.com/xpdf-$XpdfVersion.tar.gz" -Out
     "",
     "Xpdf $XpdfVersion pdftotext (GNU GPL v2 or v3) - https://www.xpdfreader.com",
     "  Unmodified Windows 64-bit binary from https://dl.xpdfreader.com/xpdf-tools-win-$XpdfVersion.zip",
-    "  Source: https://dl.xpdfreader.com/xpdf-$XpdfVersion.tar.gz (also attached to each Offline Assistant release on GitHub)",
+    "  Source: https://dl.xpdfreader.com/xpdf-$XpdfVersion.tar.gz (also attached to each PotatoLLM release on GitHub)",
     "  Its README, COPYING (GPL v2) and COPYING3 (GPL v3) are in the xpdf folder.",
     "",
     "The AI model is downloaded separately on first run, under its own licence (Gemma Terms of Use)."
 ) | Set-Content "$Dist\licenses\SOURCES.txt"
-Copy-Item (Join-Path $Root 'LICENSE') "$Dist\licenses\Offline-Assistant-LICENSE.txt"
+Copy-Item (Join-Path $Root 'LICENSE') "$Dist\licenses\PotatoLLM-LICENSE.txt"
 Copy-Item (Join-Path $Root 'THIRD_PARTY_NOTICES.md') "$Dist\licenses\THIRD_PARTY_NOTICES.txt"
 Copy-Item (Join-Path $Root 'installer\terms.txt') "$Dist\licenses\TERMS-OF-USE.txt"
 
@@ -108,8 +108,8 @@ if (-not $iscc) {
     $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
 }
 $env:APP_VERSION = $Version
-& $iscc (Join-Path $Root 'installer\OfflineAssistant.iss')
+& $iscc (Join-Path $Root 'installer\PotatoLLM.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed." }
 Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
-Write-Host "Done: $(Join-Path $Root 'output\OfflineAssistant-Setup.exe')"
+Write-Host "Done: $(Join-Path $Root 'output\PotatoLLM-Setup.exe')"
