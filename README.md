@@ -1,6 +1,16 @@
 # PotatoLLM
 
-A private AI chat assistant that runs entirely on cheap, low-powered laptops, such as an ex-corporate Lenovo ThinkPad X250. It needs no internet once installed, has no accounts and has no settings to understand.
+A private AI chat assistant that runs entirely on cheap, low-powered Windows laptops, such as ex-corporate ThinkPads. Designed to be extremely simple to use, for people with no technical knowledge of LLMs. 
+
+If you have 8Gb of system memory, PotatoLLM can run a small but relatively capable AI chat assistant right from your PC, without needing an internet connection. It works in 4Gb too, but you'll be getting a much less intelligent AI model. 
+
+This runs on your laptop, with no GPU, so it's going to be slow compared to ChatGPT or Claude - chats may take 30-60 seconds to begin while the AI reads your question, and responses will appear about around 3-5 words per second. I tested it on a Intel(R) Core(TM) i5-5300U CPU @ 2.30GHz - your mileage may vary.
+
+## Why does this exist?
+
+I know there are far more efficient ways to run local LLMs on low end hardware - but I thought it would be fun to build something for the average Windows user with a cheap laptop who wants to try local AI, without having to learn a bunch of stuff. The idea is simply that you can install a simple Windows app and start chatting right away.
+
+DISCLAIMER: I vibe-coded the whole thing with Claude - it was just an idea I wanted to try out. It comes with no guarantees.
 
 ## Install (Windows 10/11, 64-bit)
 
@@ -20,7 +30,7 @@ If you pass the model file on to someone else, Gemma's terms require a notice to
 
 Every push to `main` builds the installer on GitHub Actions (`.github/workflows/build.yml` runs `build/build.ps1`). Pushing a tag such as `v0.2.0` also publishes a release. `install.ps1` is the older script that builds from source on the target machine.
 
-## What it does
+## What it does 
 
 - Checks the computer and picks the right model automatically. With 8 GB of memory or more it uses **Gemma 3 4B** with a 32k-token chat memory; otherwise it uses **Gemma 3 1B** with a 16k-token chat memory. Chat memory is stored in compact 8-bit form. See [docs/benchmarks.md](docs/benchmarks.md) for why.
 - Chooses the best engine settings for the CPU. The user never sees them.
